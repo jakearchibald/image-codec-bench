@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Entry point: config resolution, doctor, normalise, the two phases, outputs.
 
-import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -81,11 +81,18 @@ async function main(argv) {
   // 3. Plan the grid.
   const { series, jobs } = planJobs(config);
 
-  const store = new ResultsStore(path.join(runDir, 'results.json'));
+  // The store accumulates every job ever measured against this reference, which
+  // is what makes resume work. That full history lives in its own file so the
+  // curated `results.json` can hold just this run's grid.
+  const fullResultsPath = path.join(runDir, 'full-results.json');
+  const resultsPath = path.join(runDir, 'results.json');
+  await migrateLegacyStore({ resultsPath, fullResultsPath });
+
+  const store = new ResultsStore(fullResultsPath);
   await store.load({ force: config.force });
 
   // 4. Calibrate: one encode per series, for a meaningful first ETA. Series
-  //    already timed in results.json are seeded from it rather than re-run.
+  //    already timed in full-results.json are seeded from it rather than re-run.
   if (!config.quiet) process.stdout.write(`Calibrating ${series.length} series...\n`);
   const model = await calibrate({
     series,
@@ -99,7 +106,7 @@ async function main(argv) {
   });
   // Estimate only the work actually left to do, so a resumed run's ETA is
   // right from the first job rather than starting at zero and climbing.
-  const { cachedKeys, todo } = partitionCached({
+  const { cachedKeys, todo, keys: gridKeys } = partitionCached({
     jobs,
     store,
     referenceHash,
@@ -227,7 +234,17 @@ async function main(argv) {
   }
 
   // 8. Outputs.
-  const results = store.jobs.filter((job) => job.score !== undefined);
+  //
+  // Scoped to *this run's grid*, not everything the store has accumulated.
+  // Re-running with a narrower `--avif-speed` used to report the previous run's
+  // series too, which quietly changed what the table and charts were about.
+  const results = store.jobs.filter(
+    (job) => job.score !== undefined && gridKeys.has(job.key),
+  );
+  const orphaned = store.jobs.filter(
+    (job) => job.score !== undefined && !gridKeys.has(job.key),
+  ).length;
+
   await writeFile(path.join(runDir, 'results.csv'), toCsv(results, config.timing));
   if (losslessRows?.length) {
     await writeFile(
@@ -242,6 +259,12 @@ async function main(argv) {
     process.stdout.write(`${formatLosslessTable(losslessRows, config.timing)}\n`);
   }
 
+  // results.json is this run: same shape as the store, jobs narrowed to the
+  // grid, so the report stays a pure function of the file beside it. Written
+  // before the report is built, since the report is generated from it.
+  const runData = { ...store.data, jobs: results, lossless: losslessRows ?? [] };
+  await writeFile(resultsPath, `${JSON.stringify(runData, null, 2)}\n`);
+
   const warnings = collectWarnings(results, config);
   if (warnings.length > 0) {
     process.stdout.write('\nWarnings:\n');
@@ -251,7 +274,7 @@ async function main(argv) {
   if (config.report) {
     const reportPath = await buildReport({
       runDir,
-      data: store.data,
+      data: runData,
       results,
       lossless: losslessRows ?? [],
       warnings,
@@ -259,10 +282,39 @@ async function main(argv) {
     process.stdout.write(`\nReport: ${reportPath}\n`);
   }
 
-  process.stdout.write(`Results: ${path.join(runDir, 'results.json')}\n`);
+  process.stdout.write(`Results: ${resultsPath}\n`);
+  if (orphaned > 0) {
+    process.stdout.write(
+      `         (${orphaned} result(s) from other settings kept in ` +
+        `${path.basename(fullResultsPath)}, excluded here)\n`,
+    );
+  }
 
   await rm(tempDir, { recursive: true, force: true });
   return 0;
+}
+
+/**
+ * Move a pre-existing `results.json` store to `full-results.json`.
+ *
+ * Before the split, `results.json` *was* the accumulating store. Leaving it
+ * behind would silently orphan the cache and re-encode everything, which for a
+ * full-resolution grid is hours of work.
+ */
+async function migrateLegacyStore({ resultsPath, fullResultsPath }) {
+  try {
+    await stat(fullResultsPath);
+    return; // Already migrated.
+  } catch {
+    // Not there yet; fall through.
+  }
+  try {
+    const legacy = JSON.parse(await readFile(resultsPath, 'utf8'));
+    if (!Array.isArray(legacy?.jobs) || legacy.jobs.length === 0) return;
+    await writeFile(fullResultsPath, `${JSON.stringify(legacy, null, 2)}\n`);
+  } catch {
+    // No legacy file, or unreadable: nothing to carry over.
+  }
 }
 
 function serialisableConfig(config) {

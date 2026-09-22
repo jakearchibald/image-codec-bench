@@ -5,7 +5,19 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { codecs as codecRegistry } from '../codecs/index.js';
+
 const TEMPLATE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'template.html');
+
+/**
+ * Codecs whose bit depth is an actual encoder setting. JXL is excluded: its
+ * bitstream declares 8-bit for an 8-bit input, but lossy JXL reconstructs in
+ * float/XYB with no analogue of avifenc's `-d`, so printing a depth against it
+ * implies a swept setting that does not exist.
+ */
+export const DEPTH_AXIS_CODECS = Object.entries(codecRegistry)
+  .filter(([, codec]) => codec.hasDepthAxis)
+  .map(([name]) => name);
 
 /** Score targets for the visual comparison (plan.md §7). */
 export const SCORE_TARGETS = [60, 70, 80, 90];
@@ -41,6 +53,13 @@ export function pickVariants({ results, lossless, referenceRelPath, targets = SC
 
   const codecs = [...new Set(results.map((r) => r.codec))].sort();
 
+  // Only name the axes that actually vary. With several subsampling modes or
+  // bit depths in one run, two variants at the same effort and quality would
+  // otherwise get identical labels and be indistinguishable in the picker.
+  const varies = (field) => new Set(results.map((r) => r[field])).size > 1;
+  const showDepth = varies('depth');
+  const showYuv = varies('yuv');
+
   // The slowest configured effort per codec, since that's the quality ceiling.
   // avifenc -s counts down (0 is slowest); cjxl -e counts up.
   const slowestEffort = new Map();
@@ -64,8 +83,12 @@ export function pickVariants({ results, lossless, referenceRelPath, targets = SC
       if (Math.abs(best.score - target) > 5) continue;
       if (variants.some((v) => v.key === best.key)) continue;
 
+      const settings = [best.effortLabel, `q${best.quality}`];
+      if (showDepth) settings.push(`${best.depth}-bit`);
+      if (showYuv && best.yuv) settings.push(best.yuv);
+
       variants.push({
-        name: `${codec.toUpperCase()} ~${target} (${best.effortLabel} q${best.quality})`,
+        name: `${codec.toUpperCase()} ~${target} (${settings.join(' ')})`,
         detail:
           `measured ${best.score.toFixed(2)} · ${formatBytes(best.bytes)} · ` +
           `${best.bpp.toFixed(3)} bpp`,
@@ -78,7 +101,10 @@ export function pickVariants({ results, lossless, referenceRelPath, targets = SC
     }
   }
 
-  // JXL lossless, per the plan's variant list.
+  // JXL lossless, per the plan's variant list. This is the *reference* the
+  // comparison opens on and that space flips back to: it is pixel-identical to
+  // the original, and serving it as .jxl puts it through the same browser
+  // decode path as the lossy variants, so flipping compares like with like.
   const jxlLossless = lossless.find((row) => row.codec === 'jxl' && !row.skipped);
   if (jxlLossless?.bitstream) {
     variants.push({
@@ -86,7 +112,12 @@ export function pickVariants({ results, lossless, referenceRelPath, targets = SC
       detail: `${formatBytes(jxlLossless.bytes)} · bit-exact · scores 100.00`,
       src: jxlLossless.bitstream,
       codec: 'jxl',
+      isReference: true,
     });
+  } else {
+    // No lossless JXL row (--no-lossless, or it was skipped): the original PNG
+    // has to serve as the reference instead.
+    variants[0].isReference = true;
   }
 
   return variants;
@@ -206,6 +237,7 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
     caveats: buildCaveats({ run: data.run, results }),
     nonGoals: NON_GOALS,
     targets: SCORE_TARGETS,
+    depthAxisCodecs: DEPTH_AXIS_CODECS,
     variants,
     jxlProbe: JXL_PROBE,
   };

@@ -90,21 +90,32 @@ export function buildSeries(config) {
     const codecConfig = config[codecName];
     if (!codecConfig) continue;
     const depths = codecConfig.depth ?? [8];
+    // Codecs with no subsampling axis (JXL) get a single null pass. Accepting a
+    // bare value as well as a list keeps older configs working.
+    const yuvs = toList(codecConfig.yuv);
     for (const depth of depths) {
-      for (const effort of codecConfig.effort) {
-        series.push({
-          id: seriesId(codecName, effort, depth, codecConfig.yuv),
-          codec: codecName,
-          effort,
-          depth,
-          yuv: codecConfig.yuv ?? null,
-          qalpha: codecConfig.qalpha ?? null,
-          qualities: bisectionOrder(codecConfig.quality),
-        });
+      for (const yuv of yuvs) {
+        for (const effort of codecConfig.effort) {
+          series.push({
+            id: seriesId(codecName, effort, depth, yuv),
+            codec: codecName,
+            effort,
+            depth,
+            yuv,
+            qalpha: codecConfig.qalpha ?? null,
+            qualities: bisectionOrder(codecConfig.quality),
+          });
+        }
       }
     }
   }
   return series;
+}
+
+/** Normalise an axis that may be absent, a single value, or a list. */
+function toList(value) {
+  if (value == null) return [null];
+  return Array.isArray(value) ? value : [value];
 }
 
 export function seriesId(codec, effort, depth, yuv) {

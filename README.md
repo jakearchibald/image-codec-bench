@@ -53,12 +53,17 @@ Written to `out/<image-stem>-<hash8>/`:
 | File | Contents |
 |---|---|
 | `reference.png` | the normalised 8-bit sRGB source everything was measured against |
-| `results.json` | every job plus run metadata; the source of truth |
+| `results.json` | this run's grid plus run metadata; what the report is built from |
+| `full-results.json` | every job ever measured against this reference; the resume cache |
 | `results.csv`, `lossless.csv` | the same numbers, flat |
 | `report.html` | charts, visual comparison, lossless table, caveats |
 | `assets/` | the encoded `.avif`/`.jxl`/`.webp` bitstreams the report links |
 
 The report is a pure function of `results.json`, so it can be rebuilt without re-encoding.
+
+Results accumulate across runs so that resume works, but the outputs only ever show the
+grid you asked for. Re-running with a narrower `--avif-speed` reports just those series;
+the earlier ones stay in `full-results.json` and are reused rather than re-encoded.
 
 > The report loads Chart.js from a CDN, so viewing it needs network access.
 

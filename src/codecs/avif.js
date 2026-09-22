@@ -18,9 +18,16 @@ export const defaults = {
   quality: { min: 20, max: 90, step: 5 },
   effort: [0, 1, 2, 3, 4, 5, 6],
   depth: [8],
-  yuv: '444',
+  yuv: ['444'],
   qalpha: 'match',
 };
+
+/**
+ * AVIF has a real coded bit depth: `avifenc -d 8|10|12` changes what the
+ * encoder quantises, and 10-bit 4:4:4 usually scores better than 8-bit at the
+ * same -q by avoiding 8-bit quantisation. It is therefore a swept axis.
+ */
+export const hasDepthAxis = true;
 
 export const effortFlag = 'speed';
 /** avifenc -s: 0 is slowest/best, so lower effort number = more work. */

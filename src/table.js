@@ -1,10 +1,30 @@
 // Console table and CSV output (plan.md §6).
 
+import { codecs } from './codecs/index.js';
+
+/**
+ * Depth is only meaningful for codecs that actually code at a chosen depth.
+ * Showing "8b" for JXL would imply a setting that does not exist -- see
+ * `hasDepthAxis` in src/codecs/jxl.js.
+ */
+function hasDepthAxis(row) {
+  return Boolean(codecs[row?.codec]?.hasDepthAxis);
+}
+
+function depthCell(depth, row) {
+  return hasDepthAxis(row) ? `${depth}b` : '--';
+}
+
+/** CSV keeps the bare number so the column stays machine-readable. */
+function depthCsv(depth, row) {
+  return hasDepthAxis(row) ? depth : null;
+}
+
 const COLUMNS = [
   { key: 'codec', header: 'codec', align: 'left' },
   { key: 'quality', header: 'q', align: 'right' },
   { key: 'effortLabel', header: 'effort', align: 'left' },
-  { key: 'depth', header: 'depth', align: 'right', format: (v) => `${v}b` },
+  { key: 'depth', header: 'depth', align: 'right', format: depthCell, csv: depthCsv },
   { key: 'yuv', header: 'yuv', align: 'left', format: (v) => v ?? '--' },
   { key: 'bytes', header: 'bytes', align: 'right', format: (v) => v.toLocaleString('en-US') },
   { key: 'bpp', header: 'bpp', align: 'right', format: (v) => v.toFixed(3) },
@@ -71,7 +91,7 @@ export function formatTable(results, timingModes = ['single', 'multi']) {
     columns.map((column) => {
       const value = get(result, column.key);
       if (value == null && !column.format) return '--';
-      return column.format ? column.format(value) : String(value);
+      return column.format ? column.format(value, result) : String(value);
     }),
   );
 
@@ -97,7 +117,10 @@ export function toCsv(results, timingModes = ['single', 'multi']) {
     columns
       .map((column) => {
         const value = get(result, column.key);
-        return csvCell(value);
+        // Columns with a `csv` formatter need it in the data too, not just the
+        // console view: a depth of 8 against a JXL row is the same false claim
+        // in a spreadsheet as it is on screen.
+        return column.csv ? csvCell(column.csv(value, result)) : csvCell(value);
       })
       .join(','),
   );

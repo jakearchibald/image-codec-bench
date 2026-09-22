@@ -15,6 +15,9 @@ export const MAX_DIMENSION = 16383;
 
 export const losslessOnly = true;
 
+/** WebP is 8-bit only: no depth to choose, so no axis. */
+export const hasDepthAxis = false;
+
 export const encoder = 'cwebp';
 export const decoder = 'dwebp';
 

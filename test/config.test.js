@@ -45,7 +45,7 @@ test('defaults match the plan: AVIF q20:90:5 x s0..6, JXL q15:90:5 x e7..10', as
   assert.deepEqual(config.avif.quality, [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90]);
   assert.deepEqual(config.avif.effort, [0, 1, 2, 3, 4, 5, 6]);
   assert.deepEqual(config.avif.depth, [8]);
-  assert.equal(config.avif.yuv, '444');
+  assert.deepEqual(config.avif.yuv, ['444']);
   assert.equal(config.avif.qalpha, 'match');
   assert.deepEqual(config.jxl.quality, [15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90]);
   assert.deepEqual(config.jxl.effort, [7, 8, 9, 10]);
@@ -183,4 +183,24 @@ test('a config file can request no timing', async () => {
   await writeFile(file, JSON.stringify({ input: 'x.png', timing: 'none' }));
   const config = await resolve(['--config', file]);
   assert.deepEqual(config.timing, []);
+});
+
+test('--avif-yuv accepts a comma list, one series per mode', async () => {
+  const config = await resolve(['p.png', '--avif-yuv', '444,420']);
+  assert.deepEqual(config.avif.yuv, ['444', '420']);
+});
+
+test('--avif-yuv normalises order and duplicates, so keys stay stable', async () => {
+  // Canonical order regardless of how it was typed: series ordering and cache
+  // keys must not depend on argument order.
+  const typed = await resolve(['p.png', '--avif-yuv', '420,444,420']);
+  assert.deepEqual(typed.avif.yuv, ['444', '420']);
+});
+
+test('--avif-yuv still rejects an unknown mode inside a list', async () => {
+  await assert.rejects(resolve(['p.png', '--avif-yuv', '444,411']), /--avif-yuv must be/);
+});
+
+test('--avif-yuv rejects an empty list', async () => {
+  await assert.rejects(resolve(['p.png', '--avif-yuv', ',']), /at least one mode/);
 });

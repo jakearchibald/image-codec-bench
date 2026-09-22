@@ -14,6 +14,19 @@ export const defaults = {
   depth: [8],
 };
 
+/**
+ * JPEG XL has no equivalent of avifenc's `-d`, so depth is not an axis here.
+ *
+ * The bitstream does declare 8-bit for an 8-bit input (`jxlinfo` reports
+ * "8-bit RGB"), but lossy JXL reconstructs in float/XYB and the 8 bits are only
+ * the final rounding step -- decoding a q60 file at 16-bit yields 237 distinct
+ * low bytes, where true 8-bit coding would yield exactly 1. Printing "8-bit" in
+ * the same column as AVIF's swept depth would invite reading the two as
+ * like-for-like when JXL simply has no such knob. (`--override_bitdepth` exists
+ * but overrides the *declared* depth, not the coding precision.)
+ */
+export const hasDepthAxis = false;
+
 export const effortFlag = 'effort';
 /** cjxl -e: higher is slower/better. */
 export const effortLabel = (value) => `e${value}`;

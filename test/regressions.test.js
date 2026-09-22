@@ -125,3 +125,78 @@ test('stripChunks leaves a clean PNG untouched, byte for byte', () => {
   assert.deepEqual(removed, []);
   assert.ok(buffer.equals(png));
 });
+
+test('the lossless JXL is the comparison reference, with a PNG fallback', async () => {
+  const { pickVariants } = await import('../src/report/build.js');
+  const results = [
+    { codec: 'jxl', effort: 9, score: 70.1, quality: 80, effortLabel: 'e9',
+      bytes: 1000, bpp: 0.1, bitstream: 'assets/a.jxl', key: 'k1' },
+  ];
+
+  const withLossless = pickVariants({
+    results,
+    lossless: [{ codec: 'jxl', bytes: 5000, bitstream: 'assets/lossless-jxl.jxl' }],
+    referenceRelPath: 'reference.png',
+  });
+  const reference = withLossless.find((v) => v.isReference);
+  assert.equal(reference.name, 'JXL lossless');
+  assert.equal(withLossless.filter((v) => v.isReference).length, 1);
+
+  // --no-lossless, or a skipped row: the original PNG has to stand in.
+  const without = pickVariants({ results, lossless: [], referenceRelPath: 'reference.png' });
+  const fallback = without.find((v) => v.isReference);
+  assert.ok(fallback.isOriginal, 'falls back to the original PNG');
+  assert.equal(without.filter((v) => v.isReference).length, 1);
+});
+
+test('depth is shown only for codecs that actually code at a chosen depth', async () => {
+  const { formatTable, toCsv } = await import('../src/table.js');
+  const rows = [
+    { codec: 'avif', quality: 60, effortLabel: 's6', effort: 6, depth: 10, yuv: '444',
+      bytes: 100, bpp: 0.1, score: 70, timings: {} },
+    { codec: 'jxl', quality: 60, effortLabel: 'e7', effort: 7, depth: 8, yuv: null,
+      bytes: 90, bpp: 0.09, score: 71, timings: {} },
+  ];
+
+  const table = formatTable(rows, []);
+  const [, , avifLine, jxlLine] = table.split('\n');
+  assert.match(avifLine, /10b/, 'AVIF depth is a real setting, so show it');
+  // JXL declares 8-bit but has no -d analogue; printing it invites reading the
+  // two codecs as like-for-like on a knob only one of them has.
+  assert.doesNotMatch(jxlLine, /\b8b\b/);
+
+  const csv = toCsv(rows, []).split('\n');
+  assert.match(csv[1], /^avif,60,s6,10,/, 'CSV keeps the bare number');
+  assert.match(csv[2], /^jxl,60,e7,,/, 'CSV leaves it empty rather than claiming 8');
+});
+
+test('partitionCached reports every key in the grid, not just the cached ones', () => {
+  // The store accumulates across runs, so outputs need a way to tell "in this
+  // run's grid" from "measured here at some point under other settings".
+  // Without this set, re-running with a narrower grid reported the old series.
+  const versions = { avifenc: '1.4.2' };
+  const referenceHash = 'ref';
+  const jobs = [40, 60].map((quality) => ({
+    codec: 'avif', quality, effort: 6, depth: 8, yuv: '444', qalpha: 'match', seriesId: 's',
+  }));
+  const cachedKey = keyForJob({ job: jobs[0], referenceHash, versions });
+
+  const { keys, cachedKeys, todo } = partitionCached({
+    jobs,
+    store: { get: (k) => (k === cachedKey ? { key: k, score: 1, timings: { multi: { bestMs: 1 } } } : undefined) },
+    referenceHash,
+    versions,
+    config: { timing: ['multi'], force: false },
+  });
+
+  assert.equal(keys.size, 2, 'both grid members are listed');
+  assert.equal(cachedKeys.size, 1);
+  assert.equal(todo.length, 1);
+  // A job outside the grid must not be claimed by it.
+  const outside = keyForJob({
+    job: { codec: 'avif', quality: 60, effort: 0, depth: 8, yuv: '444', qalpha: 'match' },
+    referenceHash,
+    versions,
+  });
+  assert.ok(!keys.has(outside), 'a different effort is a different grid member');
+});

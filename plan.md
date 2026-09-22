@@ -157,7 +157,7 @@ bench.json`. Ranges use `min:max:step`, or an explicit comma list.
 
 ```
 node src/cli.js photo.png \
-  --avif-quality 20:90:5 --avif-speed 0-6 --avif-depth 8,10 --avif-yuv 444 \
+  --avif-quality 20:90:5 --avif-speed 0-6 --avif-depth 8,10 --avif-yuv 444,420 \
   --avif-qalpha match \
   --jxl-quality 15:90:5  --jxl-effort 7-10 \
   --timing single,multi --repeats 3 --repeat-budget 2s \
@@ -166,7 +166,10 @@ node src/cli.js photo.png \
 ```
 
 Defaults match the original plan: AVIF `-q 20:90:5` × `-s 0..6` × 4:4:4, JXL `-q 15:90:5`
-× `-e 7..10`. `--dry-run` calibrates and prints the job count and ETA without running the
+× `-e 7..10`. `--avif-depth` and `--avif-yuv` both take lists, and each combination is its
+own series — so they multiply the AVIF grid, which is already the expensive half. With the
+default quality and speed ranges, `--avif-yuv 444,422,420` takes the run from 169 jobs to
+379. `--dry-run` calibrates and prints the job count and ETA without running the
 full grid — the intended way to size a run before committing to it.
 
 Note that `avifenc -q` and `cjxl -q` are **different scales** and are never compared
@@ -197,7 +200,7 @@ To make progress roughly linear and partial runs useful:
   now: avif q45 s0 10bit  (run 1/3)
 ```
 
-- **Resumable.** Results are appended to `results.json` keyed by a hash of (reference image
+- **Resumable.** Results are appended to `full-results.json` keyed by a hash of (reference image
   bytes, codec, all encode params, tool versions). Re-running skips completed jobs;
   `--force` ignores the cache. Ctrl-C is safe at any point. This matters because a
   full-resolution run is a multi-hour commitment.
@@ -207,7 +210,9 @@ To make progress roughly linear and partial runs useful:
 Written to `out/<image-stem>-<hash8>/`:
 
 - `reference.png` — the normalised source everything was measured against.
-- `results.json` — every job, plus run metadata: tool versions, machine, core count, config,
+- `full-results.json` — every job ever measured against this reference. Accumulates across
+  runs, which is what makes resume work; not an output to read.
+- `results.json` — **only this run's grid**, plus run metadata: tool versions, machine, core count, config,
   spawn overhead, timestamps. The source of truth; the report is a pure function of it.
 - `results.csv` and a console table — codec, quality, effort, depth, size, bpp,
   SSIMULACRA2, encode time (single, best/mean), encode time (multi, best/mean).
@@ -299,7 +304,7 @@ src/schedule.js         series expansion, bisection order, interleave, cost mode
 src/run.js              phase 1: serial timed encodes, progress + ETA
 src/score.js            phase 2: parallel decode + ssimulacra2, depth-match assert, channel-count assert
 src/lossless.js         avif/jxl/webp suite + bit-exact and score==100 assertions
-src/cache.js            results.json load/append, job hashing
+src/cache.js            full-results.json load/append, job hashing
 src/report/build.js     results.json → report.html
 src/report/template.html
 test/                   node:test — png chunk strip, schedule order, arg parsing, range parsing
@@ -355,6 +360,12 @@ already in, per §7), BD-rate aggregation across a corpus.
 - Lossless correctness asserted bit-exact; a failure aborts the run.
 - Alpha preserved end to end; `--avif-qalpha` defaults to tracking `-q`.
 - Decode depth matched to the reference, with lossless-scores-exactly-100 as a self-check.
+- **Depth is presented as an AVIF-only axis.** `avifenc -d` is a real coded-depth setting
+  that gets swept; JPEG XL has no analogue. Its bitstream declares 8-bit for an 8-bit
+  source, but lossy JXL reconstructs in float/XYB — decoding a q60 file at 16-bit yields
+  237 distinct low bytes where true 8-bit coding would yield 1. So JXL rows show `—` in the
+  depth column rather than `8`, which would invite reading the two codecs as like-for-like
+  on a knob only one of them has. `results.json` still records the reference depth.
 - WebP included in the lossless table only, not the lossy sweep (it has no comparable
   quality/effort grid against AVIF and JXL at 4:4:4). Say the word if you want lossy WebP
   as a baseline curve too.

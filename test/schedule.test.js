@@ -210,3 +210,38 @@ test('estimateRuntime is larger with timing than without', async () => {
   const timed = estimateRuntime({ jobs, config: { ...base, timing: ['single', 'multi'] }, model });
   assert.ok(timed > untimed, `expected timed (${timed}) > untimed (${untimed})`);
 });
+
+test('each subsampling mode becomes its own series', () => {
+  const series = buildSeries({
+    codecs: ['avif'],
+    avif: { quality: [40, 60], effort: [6], depth: [8], yuv: ['444', '420'], qalpha: 'match' },
+  });
+  assert.deepEqual(series.map((s) => s.id), ['avif-e6-d8-yuv444', 'avif-e6-d8-yuv420']);
+  assert.deepEqual(series.map((s) => s.yuv), ['444', '420']);
+});
+
+test('subsampling multiplies with depth and effort', () => {
+  const series = buildSeries({
+    codecs: ['avif'],
+    avif: { quality: [60], effort: [4, 6], depth: [8, 10], yuv: ['444', '420'], qalpha: 'match' },
+  });
+  assert.equal(series.length, 8, '2 depths x 2 yuv x 2 efforts');
+  assert.equal(new Set(series.map((s) => s.id)).size, 8, 'every series id is distinct');
+});
+
+test('buildSeries accepts a bare yuv value as well as a list', () => {
+  const series = buildSeries({
+    codecs: ['avif'],
+    avif: { quality: [60], effort: [6], depth: [8], yuv: '444', qalpha: 'match' },
+  });
+  assert.deepEqual(series.map((s) => s.id), ['avif-e6-d8-yuv444']);
+});
+
+test('a codec with no subsampling axis still gets exactly one series', () => {
+  const series = buildSeries({
+    codecs: ['jxl'],
+    jxl: { quality: [60], effort: [7, 9], depth: [8] },
+  });
+  assert.deepEqual(series.map((s) => s.id), ['jxl-e7-d8', 'jxl-e9-d8']);
+  assert.deepEqual(series.map((s) => s.yuv), [null, null]);
+});

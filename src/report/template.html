@@ -1,616 +1,1125 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Image codec benchmark — __IMAGE_NAME__</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg: #ffffff;
-    --fg: #17181c;
-    --muted: #5c6370;
-    --line: #d9dce3;
-    --panel: #f6f7f9;
-    --warn-bg: #fff4e5;
-    --warn-fg: #7a4900;
-    --warn-line: #e5a344;
-    --err-bg: #fdecec;
-    --err-fg: #8a1c1c;
-    --err-line: #e07171;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #16171a;
-      --fg: #e8eaed;
-      --muted: #a0a6b0;
-      --line: #32353c;
-      --panel: #1e2024;
-      --warn-bg: #3a2c12;
-      --warn-fg: #ffd08a;
-      --warn-line: #8a6520;
-      --err-bg: #3a1a1a;
-      --err-fg: #ffb3b3;
-      --err-line: #8a3333;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    padding: 2rem 1.5rem 6rem;
-    background: var(--bg);
-    color: var(--fg);
-    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-  main { max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
-  h2 { font-size: 1.2rem; margin: 2.5rem 0 .5rem; padding-bottom: .3rem; border-bottom: 1px solid var(--line); }
-  h3 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
-  p { margin: .5rem 0; }
-  .sub { color: var(--muted); margin-bottom: 1.5rem; }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; }
-  .chart-wrap { position: relative; height: 460px; margin-top: .75rem; }
-  .controls { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: .75rem 0; }
-  label.inline { display: inline-flex; align-items: center; gap: .35rem; cursor: pointer; }
-  table { border-collapse: collapse; width: 100%; margin-top: .5rem; font-size: .9rem; }
-  th, td { text-align: right; padding: .35rem .55rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th:first-child, td:first-child { text-align: left; }
-  thead th { border-bottom: 2px solid var(--line); font-weight: 600; }
-  tbody tr:hover { background: var(--panel); }
-  .banner { border-radius: 8px; padding: .85rem 1rem; margin: 1rem 0; border: 1px solid; }
-  .banner.warn { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-line); }
-  .banner.err { background: var(--err-bg); color: var(--err-fg); border-color: var(--err-line); }
-  .banner h3 { margin: 0 0 .35rem; font-size: .98rem; }
-  .banner p { margin: .25rem 0; }
-  .banner[hidden] { display: none; }
-  ul.caveats { padding-left: 1.2rem; }
-  ul.caveats li { margin: .5rem 0; }
-  .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .6rem 1.4rem; }
-  .meta-grid div { font-size: .88rem; }
-  .meta-grid dt { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
-  .meta-grid dd { margin: 0; }
-  /* ---- visual comparison ---- */
-  #compare-stage {
-    margin-top: 1rem;
-    padding: 1rem;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 200px;
-  }
-  #compare-stage.bg-checker {
-    background-image:
-      linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%),
-      linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%);
-    background-size: 20px 20px;
-    background-position: 0 0, 10px 10px;
-    background-color: #fff;
-  }
-  #compare-stage.bg-white { background: #fff; }
-  #compare-stage.bg-black { background: #000; }
-  #compare-stage img { display: block; }
-  .decode-failure {
-    display: flex; flex-direction: column; gap: .4rem;
-    max-width: 30rem; padding: 1rem 1.15rem;
-    background: var(--err-bg); color: var(--err-fg);
-    border: 1px solid var(--err-line); border-radius: 8px;
-    font-size: .9rem;
-  }
-  .variant-list label.unsupported .name { text-decoration: line-through; opacity: .65; }
-  .variant-list label.unsupported .detail::after {
-    content: ' — not decodable here'; color: var(--err-fg); font-weight: 600;
-  }
-  .variant-list { display: flex; flex-direction: column; gap: .3rem; margin: .75rem 0; }
-  .variant-list label {
-    display: flex; gap: .6rem; align-items: baseline;
-    padding: .3rem .5rem; border-radius: 5px; cursor: pointer;
-  }
-  .variant-list label:hover { background: var(--panel); }
-  .variant-list kbd {
-    font-family: ui-monospace, monospace; font-size: .75rem;
-    border: 1px solid var(--line); border-radius: 4px; padding: 0 .3rem; color: var(--muted);
-  }
-  .variant-list .name { font-weight: 600; }
-  .variant-list .detail { color: var(--muted); font-size: .85rem; }
-  .hint { color: var(--muted); font-size: .85rem; }
-  #compare-status { font-size: .85rem; color: var(--muted); min-height: 1.4em; }
-  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
-</style>
-</head>
-<body>
-<main>
-  <h1>Image codec benchmark</h1>
-  <p class="sub" id="subtitle"></p>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Image codec benchmark — __IMAGE_NAME__</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #17181c;
+        --muted: #5c6370;
+        --line: #d9dce3;
+        --panel: #f6f7f9;
+        --warn-bg: #fff4e5;
+        --warn-fg: #7a4900;
+        --warn-line: #e5a344;
+        --err-bg: #fdecec;
+        --err-fg: #8a1c1c;
+        --err-line: #e07171;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16171a;
+          --fg: #e8eaed;
+          --muted: #a0a6b0;
+          --line: #32353c;
+          --panel: #1e2024;
+          --warn-bg: #3a2c12;
+          --warn-fg: #ffd08a;
+          --warn-line: #8a6520;
+          --err-bg: #3a1a1a;
+          --err-fg: #ffb3b3;
+          --err-line: #8a3333;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 2rem 1.5rem 6rem;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.55 system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.6rem;
+        margin: 0 0 0.25rem;
+      }
+      h2 {
+        font-size: 1.2rem;
+        margin: 2.5rem 0 0.5rem;
+        padding-bottom: 0.3rem;
+        border-bottom: 1px solid var(--line);
+      }
+      h3 {
+        font-size: 1rem;
+        margin: 1.5rem 0 0.5rem;
+      }
+      p {
+        margin: 0.5rem 0;
+      }
+      .sub {
+        color: var(--muted);
+        margin-bottom: 1.5rem;
+      }
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.9em;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 1rem;
+      }
+      .chart-wrap {
+        position: relative;
+        height: 460px;
+        margin-top: 0.75rem;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: center;
+        margin: 0.75rem 0;
+      }
+      label.inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        cursor: pointer;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        text-align: right;
+        padding: 0.35rem 0.55rem;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+      th:first-child,
+      td:first-child {
+        text-align: left;
+      }
+      thead th {
+        border-bottom: 2px solid var(--line);
+        font-weight: 600;
+      }
+      tbody tr:hover {
+        background: var(--panel);
+      }
+      .banner {
+        border-radius: 8px;
+        padding: 0.85rem 1rem;
+        margin: 1rem 0;
+        border: 1px solid;
+      }
+      .banner.warn {
+        background: var(--warn-bg);
+        color: var(--warn-fg);
+        border-color: var(--warn-line);
+      }
+      .banner.err {
+        background: var(--err-bg);
+        color: var(--err-fg);
+        border-color: var(--err-line);
+      }
+      .banner h3 {
+        margin: 0 0 0.35rem;
+        font-size: 0.98rem;
+      }
+      .banner p {
+        margin: 0.25rem 0;
+      }
+      .banner[hidden] {
+        display: none;
+      }
+      ul.caveats {
+        padding-left: 1.2rem;
+      }
+      ul.caveats li {
+        margin: 0.5rem 0;
+      }
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 0.6rem 1.4rem;
+      }
+      .meta-grid div {
+        font-size: 0.88rem;
+      }
+      .meta-grid dt {
+        color: var(--muted);
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .meta-grid dd {
+        margin: 0;
+      }
+      /* ---- visual comparison ---- */
+      #compare-stage {
+        margin-top: 1rem;
+        padding: 1rem;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 200px;
+      }
+      #compare-stage.bg-checker {
+        background-image:
+          linear-gradient(
+            45deg,
+            #bbb 25%,
+            transparent 25%,
+            transparent 75%,
+            #bbb 75%
+          ),
+          linear-gradient(
+            45deg,
+            #bbb 25%,
+            transparent 25%,
+            transparent 75%,
+            #bbb 75%
+          );
+        background-size: 20px 20px;
+        background-position:
+          0 0,
+          10px 10px;
+        background-color: #fff;
+      }
+      #compare-stage.bg-white {
+        background: #fff;
+      }
+      #compare-stage.bg-black {
+        background: #000;
+      }
+      /* Half intrinsic size is set per-image in JS; max-width keeps a large source
+     from overflowing the viewport, at the cost of rendering below half size --
+     the status line says so when that happens. */
+      #compare-stage img {
+        display: block;
+        max-width: 100%;
+        height: auto;
+      }
+      .decode-failure {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        max-width: 30rem;
+        padding: 1rem 1.15rem;
+        background: var(--err-bg);
+        color: var(--err-fg);
+        border: 1px solid var(--err-line);
+        border-radius: 8px;
+        font-size: 0.9rem;
+      }
+      .variant-list label.unsupported .name {
+        text-decoration: line-through;
+        opacity: 0.65;
+      }
+      .variant-list label.unsupported .detail::after {
+        content: " — not decodable here";
+        color: var(--err-fg);
+        font-weight: 600;
+      }
+      .variant-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem 0.5rem;
+        margin: 0.75rem 0;
+      }
+      .variant-list label {
+        display: flex;
+        gap: 0.6rem;
+        align-items: baseline;
+        /* Grow to share the row, but stay wide enough for the name plus detail. */
+        flex: 1 1 18rem;
+        padding: 0.3rem 0.5rem;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      .variant-list label:hover {
+        background: var(--panel);
+      }
+      .variant-list kbd {
+        font-family: ui-monospace, monospace;
+        font-size: 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 0 0.3rem;
+        color: var(--muted);
+      }
+      .variant-list .name {
+        font-weight: 600;
+      }
+      .variant-list .detail {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      #compare-status {
+        font-size: 0.85rem;
+        color: var(--muted);
+        min-height: 1.4em;
+      }
+      footer {
+        margin-top: 3rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Image codec benchmark</h1>
+      <p class="sub" id="subtitle"></p>
 
-  <div class="banner err" id="jxl-banner" hidden>
-    <h3>This browser cannot decode JPEG XL</h3>
-    <p>The visual comparison below serves real <code>.jxl</code> files, so JXL variants will
-       appear as broken images. Enable JPEG XL to use it:</p>
-    <p class="mono" id="jxl-flag-hint"></p>
-  </div>
+      <div class="banner err" id="jxl-banner" hidden>
+        <h3>This browser cannot decode JPEG XL</h3>
+        <p>
+          The visual comparison below serves real <code>.jxl</code> files, so
+          JXL variants will appear as broken images. Enable JPEG XL to use it:
+        </p>
+        <p class="mono" id="jxl-flag-hint"></p>
+      </div>
 
-  <div class="banner warn" id="warnings-banner" hidden>
-    <h3>Warnings from this run</h3>
-    <ul id="warnings-list"></ul>
-  </div>
+      <div class="banner warn" id="warnings-banner" hidden>
+        <h3>Warnings from this run</h3>
+        <ul id="warnings-list"></ul>
+      </div>
 
-  <h2>Run metadata</h2>
-  <div class="panel">
-    <dl class="meta-grid" id="meta"></dl>
-  </div>
+      <h2>Run metadata</h2>
+      <div class="panel">
+        <dl class="meta-grid" id="meta"></dl>
+      </div>
 
-  <h2>Chart 1 — rate / distortion</h2>
-  <p>x = SSIMULACRA2 (higher is better), y = file size. <strong>Lower and further right is
-     better.</strong> One line per series (codec + effort + depth). Click a legend entry to
-     isolate it.</p>
-  <div class="controls">
-    <label class="inline"><input type="radio" name="rd-y" value="bytes" checked> y: file size</label>
-    <label class="inline"><input type="radio" name="rd-y" value="bpp"> y: bits per pixel</label>
-    <label class="inline"><input type="checkbox" id="rd-log"> log-scale y</label>
-  </div>
-  <div class="chart-wrap"><canvas id="chart-rd"></canvas></div>
+      <h2>Chart 1 — rate / distortion</h2>
+      <p>
+        x = SSIMULACRA2, y = file size.
+        <strong>Lower file size for a given SSIMULACRA2 is better.</strong> One
+        line per series (codec + effort + depth).
+      </p>
+      <div class="controls">
+        <label class="inline"
+          ><input type="checkbox" id="rd-log" /> log-scale y</label
+        >
+      </div>
+      <div class="chart-wrap"><canvas id="chart-rd"></canvas></div>
 
-  <section id="cost-section">
-    <h2>Chart 2 — encode cost</h2>
-    <p>x = SSIMULACRA2, y = encode time (best of N). Same series as above.</p>
-    <div class="controls" id="cost-controls"></div>
-    <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
-  </section>
+      <section id="cost-section">
+        <h2>Chart 2 — encode cost</h2>
+        <p>
+          x = SSIMULACRA2, y = encode time (best of N). Same series as above.
+        </p>
+        <div class="controls" id="cost-controls"></div>
+        <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
+      </section>
 
-  <div class="panel" id="no-timing-note" hidden>
-    <h2 style="margin-top:0">Chart 2 — encode cost</h2>
-    <p>This run was made with <code>--timing none</code>, so no encode times were
-       recorded and the cost chart is omitted. Re-run without that flag to measure
-       encode cost.</p>
-  </div>
+      <div class="panel" id="no-timing-note" hidden>
+        <h2 style="margin-top: 0">Chart 2 — encode cost</h2>
+        <p>
+          This run was made with <code>--timing none</code>, so no encode times
+          were recorded and the cost chart is omitted. Re-run without that flag
+          to measure encode cost.
+        </p>
+      </div>
 
-  <h2>Visual comparison</h2>
-  <p>The question here is <em>how this image would look on a real web page</em>, not
-     pixel-peeping. Each variant is shown at <strong>half its intrinsic size</strong> — what a
-     site does when serving 2×-density imagery to a high-DPR display. No zoom, no pan.</p>
-  <p class="hint">Click a variant or press its number key. <strong>Hold space</strong> to flip
-     back to the original.</p>
-  <div class="controls">
-    <span>Backdrop:</span>
-    <label class="inline"><input type="radio" name="backdrop" value="checker" checked> checkerboard</label>
-    <label class="inline"><input type="radio" name="backdrop" value="white"> white</label>
-    <label class="inline"><input type="radio" name="backdrop" value="black"> black</label>
-  </div>
-  <div class="variant-list" id="variant-list"></div>
-  <div id="compare-status">Loading variants…</div>
-  <div id="compare-stage" class="bg-checker"></div>
+      <h2>Visual comparison</h2>
+      <p>
+        The question here is
+        <em>how this image would look on a real web page</em>, not
+        pixel-peeping. Each variant is shown at
+        <strong>half its intrinsic size</strong> — what a site does when serving
+        2×-density imagery to a high-DPR display. No zoom, no pan.
+      </p>
+      <p class="hint">
+        Click a variant or press its number key. <strong>Hold space</strong> to
+        flip back to the lossless reference.
+      </p>
+      <div class="controls">
+        <span>Backdrop:</span>
+        <label class="inline"
+          ><input type="radio" name="backdrop" value="checker" />
+          checkerboard</label
+        >
+        <label class="inline"
+          ><input type="radio" name="backdrop" value="white" /> white</label
+        >
+        <label class="inline"
+          ><input type="radio" name="backdrop" value="black" checked />
+          black</label
+        >
+      </div>
+      <!-- Must match the checked backdrop radio above; syncBackdrop() re-applies
+           it from the DOM on load and on back/forward, so this is only the
+           pre-script value. -->
+      <div id="compare-stage" class="bg-black"></div>
+      <div id="compare-status">Loading variants…</div>
+      <div class="variant-list" id="variant-list"></div>
 
-  <h2>Lossless</h2>
-  <p>Every row is decoded and asserted <strong>bit-exact</strong> against the reference
-     <em>and</em> asserted to score exactly 100.00 — either check failing aborts the run, so a
-     size here is a real lossless size.</p>
-  <div id="lossless-table"></div>
+      <h2>Lossless</h2>
+      <p>
+        Every row is decoded and asserted <strong>bit-exact</strong> against the
+        reference <em>and</em> asserted to score exactly 100.00 — either check
+        failing aborts the run, so a size here is a real lossless size.
+      </p>
+      <div id="lossless-table"></div>
 
-  <h2>All results</h2>
-  <div id="results-table"></div>
+      <h2>All results</h2>
+      <p class="hint">
+        <strong>Depth is an AVIF-only axis.</strong> <code>avifenc -d</code> sets
+        the coded bit depth, and 10-bit 4:4:4 typically scores better than 8-bit
+        at the same <code>-q</code>. JPEG XL has no equivalent: its bitstream
+        declares 8-bit for an 8-bit source, but lossy JXL reconstructs in
+        float/XYB, so the 8 bits are only the final rounding step rather than a
+        setting that was chosen. Those rows show <code>—</code> rather than a
+        number that would invite reading the two as like-for-like.
+      </p>
+      <div id="results-table"></div>
 
-  <h2>Caveats</h2>
-  <ul class="caveats" id="caveats"></ul>
+      <h2>Caveats</h2>
+      <ul class="caveats" id="caveats"></ul>
 
-  <h2>Non-goals</h2>
-  <ul class="caveats" id="non-goals"></ul>
+      <h2>Non-goals</h2>
+      <ul class="caveats" id="non-goals"></ul>
 
-  <footer id="footer"></footer>
-</main>
+      <footer id="footer"></footer>
+    </main>
 
-<script id="report-data" type="application/json">__DATA__</script>
-<script>
-"use strict";
-const DATA = JSON.parse(document.getElementById('report-data').textContent);
-const { run, results, lossless, warnings, caveats, nonGoals, targets, jxlProbe } = DATA;
+    <script id="report-data" type="application/json">
+      __DATA__
+    </script>
+    <script type="module">
+      "use strict";
+      const DATA = JSON.parse(
+        document.getElementById("report-data").textContent,
+      );
+      const {
+        run,
+        results,
+        lossless,
+        warnings,
+        caveats,
+        nonGoals,
+        targets,
+        jxlProbe,
+        depthAxisCodecs,
+      } = DATA;
 
-/* ------------------------------------------------------------------ utils */
-const fmtBytes = (b) => b < 1024 ? `${b} B`
-  : b < 1048576 ? `${(b / 1024).toFixed(1)} KB`
-  : `${(b / 1048576).toFixed(2)} MB`;
-const fmtMs = (ms) => ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(0)} ms`;
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      /**
+       * Depth is only a setting for codecs that code at a chosen depth (AVIF).
+       * JXL declares 8-bit but reconstructs in float/XYB with no `-d` analogue,
+       * so showing a number there would imply a knob that does not exist.
+       */
+      const hasDepthAxis = (codec) => depthAxisCodecs.includes(codec);
 
-/* --------------------------------------------------------------- metadata */
-document.getElementById('subtitle').textContent =
-  `${run.reference.width}×${run.reference.height} (${run.reference.megapixels.toFixed(2)} MP), ` +
-  `${run.reference.depth}-bit ${run.reference.hasAlpha ? 'RGBA' : 'RGB'} — ` +
-  `${results.length} measured configurations`;
+      /* ------------------------------------------------------------------ utils */
+      const fmtBytes = (b) =>
+        b < 1024
+          ? `${b} B`
+          : b < 1048576
+            ? `${(b / 1024).toFixed(1)} KB`
+            : `${(b / 1048576).toFixed(2)} MB`;
+      const fmtMs = (ms) =>
+        ms == null
+          ? "—"
+          : ms >= 1000
+            ? `${(ms / 1000).toFixed(2)} s`
+            : `${ms.toFixed(0)} ms`;
+      const esc = (s) =>
+        String(s).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
 
-const metaEntries = [
-  ['Source', run.input.split('/').pop()],
-  ['Reference', `${run.reference.width}×${run.reference.height}, ${run.reference.depth}-bit, ${run.reference.hasAlpha ? 'RGBA' : 'RGB'}`],
-  ['Started', new Date(run.startedAt).toLocaleString()],
-  ['Machine', `${run.machine.cpu} (${run.machine.cores} logical cores)`],
-  ['avifenc / avifdec', run.versions.avifenc ?? '—'],
-  ['cjxl / djxl', run.versions.cjxl ?? '—'],
-  ['cwebp', run.versions.cwebp ?? 'not installed'],
-  ['ssimulacra2', run.versions.ssimulacra2 ?? '—'],
-  ...(run.config.timing.length
-    ? [['Spawn overhead', `${run.spawnOverheadMs.bestMs.toFixed(1)} ms best / ${run.spawnOverheadMs.medianMs.toFixed(1)} ms median (reported, not subtracted)`]]
-    : []),
-  ['Timing modes', run.config.timing.length ? run.config.timing.join(', ') : 'none (quality only)'],
-  ['Repeats', run.config.timing.length
-    ? `up to ${run.config.repeats}, budget ${(run.config.repeatBudgetMs / 1000).toFixed(1)} s`
-    : 'n/a — each job encoded once, untimed'],
-];
-document.getElementById('meta').innerHTML = metaEntries
-  .map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
+      /* --------------------------------------------------------------- metadata */
+      document.getElementById("subtitle").textContent =
+        `${run.reference.width}×${run.reference.height} (${run.reference.megapixels.toFixed(2)} MP), ` +
+        `${run.reference.depth}-bit ${run.reference.hasAlpha ? "RGBA" : "RGB"} — ` +
+        `${results.length} measured configurations`;
 
-if (warnings.length) {
-  document.getElementById('warnings-banner').hidden = false;
-  document.getElementById('warnings-list').innerHTML =
-    warnings.map((w) => `<li>${esc(w)}</li>`).join('');
-}
+      const metaEntries = [
+        ["Source", run.input.split("/").pop()],
+        [
+          "Reference",
+          `${run.reference.width}×${run.reference.height}, ${run.reference.depth}-bit, ${run.reference.hasAlpha ? "RGBA" : "RGB"}`,
+        ],
+        ["Started", new Date(run.startedAt).toLocaleString()],
+        ["Machine", `${run.machine.cpu} (${run.machine.cores} logical cores)`],
+        ["avifenc / avifdec", run.versions.avifenc ?? "—"],
+        ["cjxl / djxl", run.versions.cjxl ?? "—"],
+        ["cwebp", run.versions.cwebp ?? "not installed"],
+        ["ssimulacra2", run.versions.ssimulacra2 ?? "—"],
+        ...(run.config.timing.length
+          ? [
+              [
+                "Spawn overhead",
+                `${run.spawnOverheadMs.bestMs.toFixed(1)} ms best / ${run.spawnOverheadMs.medianMs.toFixed(1)} ms median (reported, not subtracted)`,
+              ],
+            ]
+          : []),
+        [
+          "Timing modes",
+          run.config.timing.length
+            ? run.config.timing.join(", ")
+            : "none (quality only)",
+        ],
+        [
+          "Repeats",
+          run.config.timing.length
+            ? `up to ${run.config.repeats}, budget ${(run.config.repeatBudgetMs / 1000).toFixed(1)} s`
+            : "n/a — each job encoded once, untimed",
+        ],
+      ];
+      document.getElementById("meta").innerHTML = metaEntries
+        .map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`)
+        .join("");
 
-document.getElementById('caveats').innerHTML = caveats.map((c) => `<li>${c}</li>`).join('');
-document.getElementById('non-goals').innerHTML = nonGoals.map((c) => `<li>${esc(c)}</li>`).join('');
-document.getElementById('footer').textContent =
-  `Generated ${new Date(run.startedAt).toLocaleString()} — report.html is a pure function of results.json.`;
+      if (warnings.length) {
+        document.getElementById("warnings-banner").hidden = false;
+        document.getElementById("warnings-list").innerHTML = warnings
+          .map((w) => `<li>${esc(w)}</li>`)
+          .join("");
+      }
 
-/* ----------------------------------------------------------------- series */
-const PALETTE = ['#4e79a7', '#f28e2c', '#e15759', '#76b7b2', '#59a14f',
-                 '#edc949', '#af7aa1', '#ff9da7', '#9c755f', '#bab0ab',
-                 '#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#8c564b'];
+      document.getElementById("caveats").innerHTML = caveats
+        .map((c) => `<li>${c}</li>`)
+        .join("");
+      document.getElementById("non-goals").innerHTML = nonGoals
+        .map((c) => `<li>${esc(c)}</li>`)
+        .join("");
+      document.getElementById("footer").textContent =
+        `Generated ${new Date(run.startedAt).toLocaleString()} — report.html is a pure function of results.json.`;
 
-const bySeries = new Map();
-for (const r of results) {
-  if (!bySeries.has(r.seriesId)) bySeries.set(r.seriesId, []);
-  bySeries.get(r.seriesId).push(r);
-}
-// Sort each series by score so the connecting line is monotonic on x.
-for (const points of bySeries.values()) points.sort((a, b) => a.score - b.score);
+      /* ----------------------------------------------------------------- series */
+      const PALETTE = [
+        "#4e79a7",
+        "#f28e2c",
+        "#e15759",
+        "#76b7b2",
+        "#59a14f",
+        "#edc949",
+        "#af7aa1",
+        "#ff9da7",
+        "#9c755f",
+        "#bab0ab",
+        "#1f77b4",
+        "#d62728",
+        "#2ca02c",
+        "#9467bd",
+        "#8c564b",
+      ];
 
-const seriesIds = [...bySeries.keys()].sort();
-const colourOf = new Map(seriesIds.map((id, i) => [id, PALETTE[i % PALETTE.length]]));
-// AVIF solid, JXL dashed, so the two codecs stay distinguishable even where
-// colours run out.
-const dashOf = (id) => id.startsWith('jxl') ? [6, 3] : [];
+      const bySeries = new Map();
+      for (const r of results) {
+        if (!bySeries.has(r.seriesId)) bySeries.set(r.seriesId, []);
+        bySeries.get(r.seriesId).push(r);
+      }
+      // Sort each series by score so the connecting line is monotonic on x.
+      for (const points of bySeries.values())
+        points.sort((a, b) => a.score - b.score);
 
-const seriesLabel = (id) => {
-  const first = bySeries.get(id)[0];
-  const parts = [first.codec.toUpperCase(), first.effortLabel];
-  if (first.depth !== 8) parts.push(`${first.depth}-bit`);
-  if (first.yuv && first.yuv !== '444') parts.push(first.yuv);
-  return parts.join(' ');
-};
+      const seriesIds = [...bySeries.keys()].sort();
+      const colourOf = new Map(
+        seriesIds.map((id, i) => [id, PALETTE[i % PALETTE.length]]),
+      );
+      // AVIF solid, JXL dashed, so the two codecs stay distinguishable even where
+      // colours run out.
+      const dashOf = (id) => (id.startsWith("jxl") ? [6, 3] : []);
 
-const tooltipCallbacks = {
-  title: (items) => seriesLabel(items[0].dataset.seriesId),
-  label: (item) => {
-    const r = item.raw.row;
-    const lines = [
-      `SSIMULACRA2: ${r.score.toFixed(4)}`,
-      `size: ${fmtBytes(r.bytes)} (${r.bpp.toFixed(4)} bpp)`,
-      `quality: ${r.codec === 'avif' ? '-q' : '-q'} ${r.quality}`,
-      `effort: ${r.effortLabel}`,
-      `depth: ${r.depth}-bit${r.yuv ? `, yuv ${r.yuv}` : ''}`,
-    ];
-    if (r.qalpha != null) lines.push(`qalpha: ${r.qalpha}`);
-    for (const mode of run.config.timing) {
-      const t = r.timings[mode];
-      if (t) lines.push(`${mode}: ${fmtMs(t.bestMs)} best / ${fmtMs(t.meanMs)} mean (${t.runs} run${t.runs > 1 ? 's' : ''})`);
-    }
-    return lines;
-  },
-};
+      const seriesLabel = (id) => {
+        const first = bySeries.get(id)[0];
+        const parts = [first.codec.toUpperCase(), first.effortLabel];
+        if (first.depth !== 8) parts.push(`${first.depth}-bit`);
+        if (first.yuv && first.yuv !== "444") parts.push(first.yuv);
+        return parts.join(" ");
+      };
 
-const baseOptions = () => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'nearest', intersect: false, axis: 'xy' },
-  plugins: {
-    legend: { position: 'right', labels: { boxWidth: 12, usePointStyle: true } },
-    tooltip: { callbacks: tooltipCallbacks },
-  },
-  scales: {
-    x: { title: { display: true, text: 'SSIMULACRA2 (higher is better)' }, type: 'linear' },
-  },
-});
+      const tooltipCallbacks = {
+        title: (items) => seriesLabel(items[0].dataset.seriesId),
+        label: (item) => {
+          const r = item.raw.row;
+          const lines = [
+            `SSIMULACRA2: ${r.score.toFixed(4)}`,
+            `size: ${fmtBytes(r.bytes)} (${r.bpp.toFixed(4)} bpp)`,
+            `quality: ${r.codec === "avif" ? "-q" : "-q"} ${r.quality}`,
+            `effort: ${r.effortLabel}`,
+            ...(hasDepthAxis(r.codec)
+              ? [`depth: ${r.depth}-bit${r.yuv ? `, yuv ${r.yuv}` : ""}`]
+              : []),
+          ];
+          if (r.qalpha != null) lines.push(`qalpha: ${r.qalpha}`);
+          for (const mode of run.config.timing) {
+            const t = r.timings[mode];
+            if (t)
+              lines.push(
+                `${mode}: ${fmtMs(t.bestMs)} best / ${fmtMs(t.meanMs)} mean (${t.runs} run${t.runs > 1 ? "s" : ""})`,
+              );
+          }
+          return lines;
+        },
+      };
 
-function datasetsFor(yPick) {
-  return seriesIds.map((id) => ({
-    label: seriesLabel(id),
-    seriesId: id,
-    data: bySeries.get(id)
-      .map((r) => ({ x: r.score, y: yPick(r), row: r }))
-      .filter((p) => p.y != null),
-    borderColor: colourOf.get(id),
-    backgroundColor: colourOf.get(id),
-    borderDash: dashOf(id),
-    showLine: true,
-    pointRadius: 3,
-    pointHoverRadius: 6,
-    borderWidth: 2,
-    tension: 0,
-  }));
-}
+      const baseOptions = () => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "nearest", intersect: false, axis: "xy" },
+        plugins: {
+          legend: {
+            position: "right",
+            labels: { boxWidth: 12, usePointStyle: true },
+          },
+          tooltip: { callbacks: tooltipCallbacks },
+        },
+        scales: {
+          x: {
+            title: {
+              display: true,
+              text: "SSIMULACRA2 (higher is closer to the original)",
+            },
+            type: "linear",
+          },
+        },
+      });
 
-/* --------------------------------------------------- chart 1: rate/distortion */
-let rdMode = 'bytes';
-const rdChart = new Chart(document.getElementById('chart-rd'), {
-  type: 'scatter',
-  data: { datasets: datasetsFor((r) => r.bytes) },
-  options: {
-    ...baseOptions(),
-    scales: {
-      ...baseOptions().scales,
-      y: { title: { display: true, text: 'file size (bytes)' }, type: 'linear' },
-    },
-  },
-});
+      function datasetsFor(yPick) {
+        return seriesIds.map((id) => ({
+          label: seriesLabel(id),
+          seriesId: id,
+          data: bySeries
+            .get(id)
+            .map((r) => ({ x: r.score, y: yPick(r), row: r }))
+            .filter((p) => p.y != null),
+          borderColor: colourOf.get(id),
+          backgroundColor: colourOf.get(id),
+          borderDash: dashOf(id),
+          showLine: true,
+          pointRadius: 3,
+          pointHoverRadius: 6,
+          borderWidth: 2,
+          tension: 0,
+        }));
+      }
 
-function refreshRd() {
-  const log = document.getElementById('rd-log').checked;
-  rdChart.data.datasets = datasetsFor((r) => rdMode === 'bytes' ? r.bytes : r.bpp);
-  rdChart.options.scales.y.type = log ? 'logarithmic' : 'linear';
-  rdChart.options.scales.y.title.text =
-    rdMode === 'bytes' ? 'file size (bytes)' : 'bits per pixel';
-  rdChart.update();
-}
-for (const input of document.querySelectorAll('input[name="rd-y"]')) {
-  input.addEventListener('change', (e) => { rdMode = e.target.value; refreshRd(); });
-}
-document.getElementById('rd-log').addEventListener('change', refreshRd);
+      /* --------------------------------------------------- chart 1: rate/distortion */
+      // y is always file size. bpp would only be file size scaled by a constant here,
+      // since every series is the same single image.
+      const rdChart = new Chart(document.getElementById("chart-rd"), {
+        type: "scatter",
+        data: { datasets: datasetsFor((r) => r.bytes) },
+        options: {
+          ...baseOptions(),
+          scales: {
+            ...baseOptions().scales,
+            y: {
+              title: { display: true, text: "file size (bytes)" },
+              type: "linear",
+            },
+          },
+        },
+      });
 
-/* ------------------------------------------------------ chart 2: encode cost */
-const hasTiming = run.config.timing.length > 0;
-if (!hasTiming) {
-  document.getElementById('cost-section').hidden = true;
-  document.getElementById('no-timing-note').hidden = false;
-}
+      function refreshRd() {
+        const log = document.getElementById("rd-log").checked;
+        rdChart.options.scales.y.type = log ? "logarithmic" : "linear";
+        rdChart.update();
+      }
+      document.getElementById("rd-log").addEventListener("change", refreshRd);
 
-let costMode = run.config.timing[0];
-const costControls = document.getElementById('cost-controls');
-if (hasTiming) {
-  costControls.innerHTML = '<span>Threading:</span>' + run.config.timing.map((mode, i) =>
-    `<label class="inline"><input type="radio" name="cost-mode" value="${mode}"${i === 0 ? ' checked' : ''}> ` +
-    `${mode === 'single' ? 'single thread' : 'all cores'}</label>`).join('') +
-    '<label class="inline"><input type="checkbox" id="cost-log" checked> log-scale y</label>';
+      /* ------------------------------------------------------ chart 2: encode cost */
+      /** Set by the cost chart once built, so syncFormState can refresh it. */
+      let syncCharts = () => {};
+      const hasTiming = run.config.timing.length > 0;
+      if (!hasTiming) {
+        document.getElementById("cost-section").hidden = true;
+        document.getElementById("no-timing-note").hidden = false;
+      }
 
-  const costChart = new Chart(document.getElementById('chart-cost'), {
-    type: 'scatter',
-    data: { datasets: datasetsFor((r) => r.timings[costMode]?.bestMs) },
-    options: {
-      ...baseOptions(),
-      scales: {
-        ...baseOptions().scales,
-        y: { title: { display: true, text: 'encode time (ms, best of N)' }, type: 'logarithmic' },
-      },
-    },
-  });
+      let costMode = run.config.timing[0];
+      const costControls = document.getElementById("cost-controls");
+      if (hasTiming) {
+        costControls.innerHTML =
+          "<span>Threading:</span>" +
+          run.config.timing
+            .map(
+              (mode, i) =>
+                `<label class="inline"><input type="radio" name="cost-mode" value="${mode}"${i === 0 ? " checked" : ""}> ` +
+                `${mode === "single" ? "single thread" : "all cores"}</label>`,
+            )
+            .join("") +
+          '<label class="inline"><input type="checkbox" id="cost-log" checked> log-scale y</label>';
 
-  function refreshCost() {
-    costChart.data.datasets = datasetsFor((r) => r.timings[costMode]?.bestMs);
-    costChart.options.scales.y.type =
-      document.getElementById('cost-log').checked ? 'logarithmic' : 'linear';
-    costChart.update();
-  }
-  for (const input of costControls.querySelectorAll('input[name="cost-mode"]')) {
-    input.addEventListener('change', (e) => { costMode = e.target.value; refreshCost(); });
-  }
-  document.getElementById('cost-log').addEventListener('change', refreshCost);
-}
+        const costChart = new Chart(document.getElementById("chart-cost"), {
+          type: "scatter",
+          data: { datasets: datasetsFor((r) => r.timings[costMode]?.bestMs) },
+          options: {
+            ...baseOptions(),
+            scales: {
+              ...baseOptions().scales,
+              y: {
+                title: { display: true, text: "encode time (ms, best of N)" },
+                type: "logarithmic",
+              },
+            },
+          },
+        });
 
-/* ---------------------------------------------------------------- tables */
-function renderResultsTable() {
-  const modes = run.config.timing;
-  const head = ['codec', 'q', 'effort', 'depth', 'yuv', 'bytes', 'bpp', 'SSIMULACRA2',
-    ...modes.flatMap((m) => [`${m} best`, `${m} mean`])];
-  const sorted = [...results].sort((a, b) =>
-    a.codec.localeCompare(b.codec) || a.depth - b.depth || a.effort - b.effort || a.quality - b.quality);
-  const rows = sorted.map((r) => [
-    r.codec, r.quality, r.effortLabel, `${r.depth}-bit`, r.yuv ?? '—',
-    r.bytes.toLocaleString(), r.bpp.toFixed(4), r.score.toFixed(4),
-    ...modes.flatMap((m) => [fmtMs(r.timings[m]?.bestMs), fmtMs(r.timings[m]?.meanMs)]),
-  ]);
-  document.getElementById('results-table').innerHTML =
-    `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>` +
-    `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-}
-renderResultsTable();
+        function refreshCost() {
+          // Read the mode from the DOM instead of tracking it in a variable: on
+          // reload the browser may restore a different radio than the markup's
+          // default, and a cached variable would then describe the wrong series.
+          costMode =
+            costControls.querySelector('input[name="cost-mode"]:checked')
+              ?.value ?? run.config.timing[0];
+          costChart.data.datasets = datasetsFor(
+            (r) => r.timings[costMode]?.bestMs,
+          );
+          costChart.options.scales.y.type = document.getElementById("cost-log")
+            .checked
+            ? "logarithmic"
+            : "linear";
+          costChart.update();
+        }
+        for (const input of costControls.querySelectorAll(
+          'input[name="cost-mode"]',
+        )) {
+          input.addEventListener("change", refreshCost);
+        }
+        document
+          .getElementById("cost-log")
+          .addEventListener("change", refreshCost);
+        syncCharts = refreshCost;
+      }
 
-function renderLosslessTable() {
-  const modes = run.config.timing;
-  if (!lossless.length) {
-    document.getElementById('lossless-table').innerHTML = '<p class="hint">Lossless suite not run.</p>';
-    return;
-  }
-  const head = ['Config', 'Bytes', 'bpp', ...modes.map((m) => m === 'multi' ? 'Multi' : 'Single'),
-    'SSIMULACRA2', 'Bit-exact'];
-  const rows = lossless.map((row) => {
-    if (row.skipped) return [row.label ?? row.codec, 'skipped', '—', ...modes.map(() => '—'), '—', '—'];
-    return [
-      row.label, row.bytes.toLocaleString(), row.bpp?.toFixed(4) ?? '—',
-      ...modes.map((m) => fmtMs(row.timings?.[m]?.bestMs)),
-      row.score == null ? '—' : row.score.toFixed(2),
-      row.bitExact == null ? '—' : row.bitExact ? 'yes' : 'NO',
-    ];
-  });
-  document.getElementById('lossless-table').innerHTML =
-    `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>` +
-    `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>` +
-    (lossless.some((r) => r.skipped)
-      ? `<p class="hint">${lossless.filter((r) => r.skipped).map((r) => esc(r.warning)).join(' ')}</p>`
-      : '');
-}
-renderLosslessTable();
+      /* ---------------------------------------------------------------- tables */
+      function renderResultsTable() {
+        const modes = run.config.timing;
+        const head = [
+          "codec",
+          "q",
+          "effort",
+          "depth",
+          "yuv",
+          "bytes",
+          "bpp",
+          "SSIMULACRA2",
+          ...modes.flatMap((m) => [`${m} best`, `${m} mean`]),
+        ];
+        const sorted = [...results].sort(
+          (a, b) =>
+            a.codec.localeCompare(b.codec) ||
+            a.depth - b.depth ||
+            a.effort - b.effort ||
+            a.quality - b.quality,
+        );
+        const rows = sorted.map((r) => [
+          r.codec,
+          r.quality,
+          r.effortLabel,
+          hasDepthAxis(r.codec) ? `${r.depth}-bit` : "—",
+          r.yuv ?? "—",
+          r.bytes.toLocaleString(),
+          r.bpp.toFixed(4),
+          r.score.toFixed(4),
+          ...modes.flatMap((m) => [
+            fmtMs(r.timings[m]?.bestMs),
+            fmtMs(r.timings[m]?.meanMs),
+          ]),
+        ]);
+        document.getElementById("results-table").innerHTML =
+          `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>` +
+          `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+      }
+      renderResultsTable();
 
-/* --------------------------------------------------- visual comparison */
-const stage = document.getElementById('compare-stage');
-const status = document.getElementById('compare-status');
-const variants = DATA.variants;
-let current = null;
-let resumeIndex = null;
-let held = false;
-/**
- * Guards against out-of-order swaps. `show()` awaits decode(), so a fast
- * space-tap or a rush through the number keys can have an earlier call resolve
- * *after* a later one and leave the wrong image on screen while the radio says
- * otherwise -- which would quietly invalidate the very comparison this is for.
- */
-let showToken = 0;
+      function renderLosslessTable() {
+        const modes = run.config.timing;
+        if (!lossless.length) {
+          document.getElementById("lossless-table").innerHTML =
+            '<p class="hint">Lossless suite not run.</p>';
+          return;
+        }
+        const head = [
+          "Config",
+          "Bytes",
+          "bpp",
+          ...modes.map((m) => (m === "multi" ? "Multi" : "Single")),
+          "SSIMULACRA2",
+          "Bit-exact",
+        ];
+        const rows = lossless.map((row) => {
+          if (row.skipped)
+            return [
+              row.label ?? row.codec,
+              "skipped",
+              "—",
+              ...modes.map(() => "—"),
+              "—",
+              "—",
+            ];
+          return [
+            row.label,
+            row.bytes.toLocaleString(),
+            row.bpp?.toFixed(4) ?? "—",
+            ...modes.map((m) => fmtMs(row.timings?.[m]?.bestMs)),
+            row.score == null ? "—" : row.score.toFixed(2),
+            row.bitExact == null ? "—" : row.bitExact ? "yes" : "NO",
+          ];
+        });
+        document.getElementById("lossless-table").innerHTML =
+          `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>` +
+          `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>` +
+          (lossless.some((r) => r.skipped)
+            ? `<p class="hint">${lossless
+                .filter((r) => r.skipped)
+                .map((r) => esc(r.warning))
+                .join(" ")}</p>`
+            : "");
+      }
+      renderLosslessTable();
 
-for (const input of document.querySelectorAll('input[name="backdrop"]')) {
-  input.addEventListener('change', (e) => {
-    stage.className = `bg-${e.target.value}`;
-  });
-}
+      /* --------------------------------------------------- visual comparison */
+      const stage = document.getElementById("compare-stage");
+      const status = document.getElementById("compare-status");
+      const variants = DATA.variants;
+      let current = null;
+      let currentFailed = false;
+      /** Appended to every status line (e.g. variants this browser cannot decode). */
+      let statusSuffix = "";
+      let resumeIndex = null;
+      let held = false;
+      /**
+       * Guards against out-of-order swaps. `show()` awaits decode(), so a fast
+       * space-tap or a rush through the number keys can have an earlier call resolve
+       * *after* a later one and leave the wrong image on screen while the radio says
+       * otherwise -- which would quietly invalidate the very comparison this is for.
+       */
+      let showToken = 0;
 
-document.getElementById('variant-list').innerHTML = variants.map((v, i) => `
+      /**
+       * Apply the checked backdrop. Read from the DOM rather than assumed, so a
+       * browser-restored radio and the stage can't disagree.
+       */
+      function syncBackdrop() {
+        const checked = document.querySelector(
+          'input[name="backdrop"]:checked',
+        );
+        stage.className = `bg-${checked?.value ?? "checker"}`;
+      }
+
+      for (const input of document.querySelectorAll('input[name="backdrop"]')) {
+        input.addEventListener("change", syncBackdrop);
+      }
+
+      /**
+       * Bring the page in line with what the form controls actually say.
+       *
+       * Browsers restore form state during parsing, and without firing `change`.
+       * Anything that cached a default in a variable -- the displayed variant, the
+       * backdrop, the cost-chart series -- would then describe something other
+       * than what is on screen. So the DOM is the single source of truth here.
+       *
+       * This script is `type="module"` and therefore deferred, so it runs after
+       * the document is parsed: restoration has already happened and reading the
+       * fields once at startup is enough.
+       */
+      async function syncFormState() {
+        syncBackdrop();
+        syncCharts();
+        refreshRd();
+
+        let index = Number(
+          document.querySelector('input[name="variant"]:checked')?.value ??
+            referenceIndex,
+        );
+        // A restored selection can name a variant this browser cannot decode
+        // (JXL without support): fall back rather than opening on an error.
+        if (variants[index]?.ok === false) {
+          const fallback = variants.findIndex((v) => v.isOriginal);
+          if (fallback >= 0 && variants[fallback]?.ok !== false) index = fallback;
+        }
+        const radio = document.querySelector(
+          `input[name="variant"][value="${index}"]`,
+        );
+        if (radio) radio.checked = true;
+        if (index !== current) await show(index);
+      }
+
+      /**
+       * Shortcut key for a variant: 1-9, then 0 for the tenth. Beyond ten there is
+       * no digit left to use, so those variants are click-only rather than being
+       * labelled with a key that does nothing.
+       */
+      function keyLabel(i) {
+        if (i < 9) return String(i + 1);
+        if (i === 9) return "0";
+        return null;
+      }
+
+      /** Index a pressed digit refers to, or -1. Inverse of keyLabel. */
+      function indexForDigit(key) {
+        if (key === "0") return 9;
+        if (/^[1-9]$/.test(key)) return Number(key) - 1;
+        return -1;
+      }
+
+      // Default to the lossless reference: it is pixel-identical to the original, so
+      // it is the honest thing to compare against, and serving it as .jxl means the
+      // comparison runs through the same decode path as the lossy variants.
+      const referenceIndex = Math.max(
+        0,
+        variants.findIndex((v) => v.isReference),
+      );
+
+      document.getElementById("variant-list").innerHTML = variants
+        .map(
+          (v, i) => `
   <label>
-    <input type="radio" name="variant" value="${i}"${i === 0 ? ' checked' : ''}>
-    <kbd>${i + 1}</kbd>
+    <input type="radio" name="variant" value="${i}"${i === referenceIndex ? " checked" : ""}>
+    ${keyLabel(i) === null ? "" : `<kbd>${keyLabel(i)}</kbd>`}
     <span>
       <span class="name">${esc(v.name)}</span>
       <span class="detail">${esc(v.detail)}</span>
     </span>
-  </label>`).join('');
+  </label>`,
+        )
+        .join("");
 
-/** Placeholder shown in place of a variant this browser cannot decode. */
-function failureNotice(v) {
-  const box = document.createElement('div');
-  box.className = 'decode-failure';
-  box.innerHTML =
-    `<strong>${esc(v.name)} could not be decoded</strong>` +
-    `<span>This browser has no ${v.codec.toUpperCase()} support, so there is nothing to ` +
-    `compare here. The previous image has been cleared deliberately — leaving it up would ` +
-    `mean judging one codec while looking at another.</span>`;
-  return box;
-}
+      /** Placeholder shown in place of a variant this browser cannot decode. */
+      function failureNotice(v) {
+        const box = document.createElement("div");
+        box.className = "decode-failure";
+        box.innerHTML =
+          `<strong>${esc(v.name)} could not be decoded</strong>` +
+          `<span>This browser has no ${v.codec.toUpperCase()} support, so there is nothing to ` +
+          `compare here. The previous image has been cleared deliberately — leaving it up would ` +
+          `mean judging one codec while looking at another.</span>`;
+        return box;
+      }
 
-/**
- * Build a fresh <img>, await decode(), then swap. Mutating src on one
- * long-lived element can blank or tear it between the assignment and the next
- * frame; constructing off-document and attaching only once decoded makes the
- * swap a single clean frame, which is what makes the flicker test trustworthy.
- */
-async function show(index) {
-  const v = variants[index];
-  if (!v) return;
-  const token = ++showToken;
-  const img = new Image();
-  img.src = v.src;
-  img.alt = v.name;
-  try {
-    await img.decode();
-  } catch (error) {
-    if (token !== showToken) return;
-    // Do NOT leave the previous variant on screen: someone would then be
-    // comparing the selected label against a stale image of a different
-    // codec. Clear the stage and say so instead.
-    stage.replaceChildren(failureNotice(v));
-    current = index;
-    status.textContent = `Could not decode ${v.name} (${v.src.split('/').pop()}) — this browser lacks support.`;
-    return;
-  }
-  // A newer show() started while this one was decoding; it owns the stage now.
-  if (token !== showToken) return;
-  // Half intrinsic size: exactly what a site does serving 2x imagery to a
-  // high-DPR display. Width only, so height stays proportional.
-  img.width = Math.round(img.naturalWidth / 2);
-  stage.replaceChildren(img);
-  current = index;
-  status.textContent = `${v.name} — ${v.detail}`;
-}
+      /**
+       * Build a fresh <img>, await decode(), then swap. Mutating src on one
+       * long-lived element can blank or tear it between the assignment and the next
+       * frame; constructing off-document and attaching only once decoded makes the
+       * swap a single clean frame, which is what makes the flicker test trustworthy.
+       */
+      async function show(index) {
+        const v = variants[index];
+        if (!v) return;
+        const token = ++showToken;
+        const img = new Image();
+        img.src = v.src;
+        img.alt = v.name;
+        try {
+          await img.decode();
+        } catch (error) {
+          if (token !== showToken) return;
+          // Do NOT leave the previous variant on screen: someone would then be
+          // comparing the selected label against a stale image of a different
+          // codec. Clear the stage and say so instead.
+          stage.replaceChildren(failureNotice(v));
+          current = index;
+          currentFailed = true;
+          renderStatus();
+          return;
+        }
+        // A newer show() started while this one was decoding; it owns the stage now.
+        if (token !== showToken) return;
+        // Half intrinsic size: exactly what a site does serving 2x imagery to a
+        // high-DPR display. Width only, so height stays proportional.
+        img.width = Math.round(img.naturalWidth / 2);
+        stage.replaceChildren(img);
+        current = index;
+        currentFailed = false;
+        renderStatus();
+      }
 
-/** Preload and decode every variant up front so per-swap decode() is cached. */
-async function preload() {
-  const failures = [];
-  await Promise.all(variants.map(async (v) => {
-    const img = new Image();
-    img.src = v.src;
-    try {
-      await img.decode();
-      v.ok = true;
-    } catch (error) {
-      v.ok = false;
-      failures.push(v.name);
-    }
-  }));
-  return failures;
-}
+      /**
+       * Write the status line from whatever is on screen right now.
+       *
+       * Kept separate from show() and re-run on layout changes because the
+       * below-half-size note depends on the rendered width: computing it once at swap
+       * time left it stale the moment the window was resized, which is exactly when
+       * it becomes wrong.
+       */
+      function renderStatus() {
+        const v = variants[current];
+        if (!v) return;
 
-/**
- * The comparison serves real .jxl files, so a browser without JXL shows broken
- * images in a test whose whole purpose is judging by eye. Probe and say so.
- */
-async function probeJxl() {
-  const img = new Image();
-  img.src = jxlProbe.dataUri;
-  try {
-    await img.decode();
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
+        if (currentFailed) {
+          status.textContent =
+            `Could not decode ${v.name} (${v.src.split("/").pop()}) — this browser lacks support.` +
+            statusSuffix;
+          return;
+        }
 
-(async function initCompare() {
-  const jxlOk = await probeJxl();
-  if (!jxlOk && variants.some((v) => v.codec === 'jxl')) {
-    document.getElementById('jxl-banner').hidden = false;
-    document.getElementById('jxl-flag-hint').textContent = jxlProbe.hint;
-  }
-  const failures = await preload();
+        // max-width can shrink the image below half size on a narrow viewport. Say so
+        // rather than letting the "half intrinsic size" claim above go stale.
+        const img = stage.querySelector("img");
+        let constrained = "";
+        if (img && img.naturalWidth > 0) {
+          const half = img.naturalWidth / 2;
+          const shown = img.getBoundingClientRect().width;
+          if (shown > 0 && shown < half - 1) {
+            constrained = ` — shown at ${Math.round((shown / img.naturalWidth) * 100)}% to fit the window, not 50%`;
+          }
+        }
 
-  // Mark undecodable variants up front, so the limitation is visible before
-  // anyone clicks one and wonders why nothing changed.
-  variants.forEach((v, i) => {
-    if (v.ok === false) {
-      document.querySelector(`input[name="variant"][value="${i}"]`)
-        .closest('label').classList.add('unsupported');
-    }
-  });
+        const text = `${v.name} — ${v.detail}${constrained}${statusSuffix}`;
+        // Only touch the DOM on a real change: this runs from a ResizeObserver, and
+        // a no-op write per resize frame is wasted work.
+        if (status.textContent !== text) status.textContent = text;
+      }
 
-  await show(0);
-  if (failures.length) {
-    status.textContent += ` — cannot decode here: ${failures.join(', ')}`;
-  }
+      // Recompute on any layout change, not just window resize -- zoom, devtools and
+      // font loading all move the rendered width without a resize event.
+      new ResizeObserver(() => renderStatus()).observe(stage);
 
-  for (const input of document.querySelectorAll('input[name="variant"]')) {
-    input.addEventListener('change', (e) => show(Number(e.target.value)));
-  }
+      /** Preload and decode every variant up front so per-swap decode() is cached. */
+      async function preload() {
+        const failures = [];
+        await Promise.all(
+          variants.map(async (v) => {
+            const img = new Image();
+            img.src = v.src;
+            try {
+              await img.decode();
+              v.ok = true;
+            } catch (error) {
+              v.ok = false;
+              failures.push(v.name);
+            }
+          }),
+        );
+        return failures;
+      }
 
-  document.addEventListener('keydown', (e) => {
-    // Only bail for *text* entry. A variant radio keeps focus after a click,
-    // so guarding all inputs would break space-to-flip and the number keys
-    // exactly when someone is using the UI as intended.
-    if (e.target.matches('textarea, input[type="text"], input[type="search"], [contenteditable]')) return;
-    if (e.code === 'Space') {
-      e.preventDefault();
-      if (held) return;
-      const originalIndex = variants.findIndex((v) => v.isOriginal);
-      if (originalIndex < 0 || originalIndex === current) return;
-      held = true;
-      resumeIndex = current;
-      show(originalIndex);
-      return;
-    }
-    const digit = Number(e.key);
-    if (Number.isInteger(digit) && digit >= 1 && digit <= variants.length) {
-      const index = digit - 1;
-      document.querySelector(`input[name="variant"][value="${index}"]`).checked = true;
-      show(index);
-    }
-  });
+      /**
+       * The comparison serves real .jxl files, so a browser without JXL shows broken
+       * images in a test whose whole purpose is judging by eye. Probe and say so.
+       */
+      async function probeJxl() {
+        const img = new Image();
+        img.src = jxlProbe.dataUri;
+        try {
+          await img.decode();
+          return true;
+        } catch (error) {
+          return false;
+        }
+      }
 
-  document.addEventListener('keyup', (e) => {
-    if (e.code !== 'Space') return;
-    e.preventDefault();
-    if (!held) return;
-    held = false;
-    if (resumeIndex != null) {
-      const resume = resumeIndex;
-      resumeIndex = null;
-      show(resume);
-    }
-  });
-})();
-</script>
-</body>
+      (async function initCompare() {
+        const jxlOk = await probeJxl();
+        if (!jxlOk && variants.some((v) => v.codec === "jxl")) {
+          document.getElementById("jxl-banner").hidden = false;
+          document.getElementById("jxl-flag-hint").textContent = jxlProbe.hint;
+        }
+        const failures = await preload();
+
+        // Mark undecodable variants up front, so the limitation is visible before
+        // anyone clicks one and wonders why nothing changed.
+        variants.forEach((v, i) => {
+          if (v.ok === false) {
+            document
+              .querySelector(`input[name="variant"][value="${i}"]`)
+              .closest("label")
+              .classList.add("unsupported");
+          }
+        });
+
+        await syncFormState();
+        if (failures.length) {
+          // Part of the suffix, not a one-off append: it used to be overwritten by
+          // the next swap, so the warning vanished as soon as you clicked anything.
+          statusSuffix = ` — cannot decode here: ${failures.join(", ")}`;
+          renderStatus();
+        }
+
+        for (const input of document.querySelectorAll(
+          'input[name="variant"]',
+        )) {
+          input.addEventListener("change", (e) => show(Number(e.target.value)));
+        }
+
+        document.addEventListener("keydown", (e) => {
+          // Only bail for *text* entry. A variant radio keeps focus after a click,
+          // so guarding all inputs would break space-to-flip and the number keys
+          // exactly when someone is using the UI as intended.
+          if (
+            e.target.matches(
+              'textarea, input[type="text"], input[type="search"], [contenteditable]',
+            )
+          )
+            return;
+          if (e.code === "Space") {
+            e.preventDefault();
+            if (held) return;
+            const target =
+              variants[referenceIndex]?.ok === false
+                ? variants.findIndex((v) => v.isOriginal)
+                : referenceIndex;
+            if (target < 0 || target === current) return;
+            held = true;
+            resumeIndex = current;
+            show(target);
+            return;
+          }
+          const index = indexForDigit(e.key);
+          if (index >= 0 && index < variants.length) {
+            document.querySelector(
+              `input[name="variant"][value="${index}"]`,
+            ).checked = true;
+            show(index);
+          }
+        });
+
+        document.addEventListener("keyup", (e) => {
+          if (e.code !== "Space") return;
+          e.preventDefault();
+          if (!held) return;
+          held = false;
+          if (resumeIndex != null) {
+            const resume = resumeIndex;
+            resumeIndex = null;
+            show(resume);
+          }
+        });
+      })();
+    </script>
+  </body>
 </html>

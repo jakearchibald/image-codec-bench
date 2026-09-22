@@ -80,12 +80,18 @@ export function keyForJob({ job, referenceHash, versions }) {
  * Used for the ETA as well as the skip decision: crediting a cached job's full
  * estimated weight the instant it is skipped would make the progress rate look
  * enormous and the first ETA of a resumed run near-zero.
+ *
+ * `keys` is every key in the grid, cached or not. The results store accumulates
+ * across runs, so this is what distinguishes "in this run's grid" from "measured
+ * here at some point with other settings".
  */
 export function partitionCached({ jobs, store, referenceHash, versions, config }) {
   const cachedKeys = new Set();
+  const keys = new Set();
   const todo = [];
   for (const job of jobs) {
     const key = keyForJob({ job, referenceHash, versions });
+    keys.add(key);
     const cached = store.get(key);
     const hasWantedTimings = config.timing.every((m) => cached?.timings?.[m]);
     if (!config.force && cached && cached.score !== undefined && hasWantedTimings) {
@@ -94,7 +100,7 @@ export function partitionCached({ jobs, store, referenceHash, versions, config }
       todo.push(job);
     }
   }
-  return { cachedKeys, todo };
+  return { cachedKeys, todo, keys };
 }
 
 function bitstreamName(job) {
@@ -138,7 +144,7 @@ export async function calibrate({
 
   const needed = series.filter((s) => modes.some((m) => !seeded.has(`${s.id}\u0000${m}`)));
   if (needed.length === 0) {
-    log('calibration skipped: every series already has timings in results.json');
+    log('calibration skipped: every series already has timings in full-results.json');
     return model;
   }
 

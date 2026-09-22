@@ -67,6 +67,31 @@ export function parsePixels(spec) {
   return Math.round(value);
 }
 
+/** Subsampling modes avifenc accepts, in canonical order. */
+export const YUV_MODES = ['444', '422', '420', '400'];
+
+/**
+ * Parse `--avif-yuv`: one mode or a comma list, e.g. `444,420`. Each mode is a
+ * separate series, so this multiplies the AVIF grid the same way `--avif-depth`
+ * does.
+ */
+export function parseYuvModes(spec) {
+  const modes = String(spec)
+    .split(',')
+    .map((m) => m.trim())
+    .filter((m) => m.length > 0);
+
+  if (modes.length === 0) throw new Error('--avif-yuv needs at least one mode');
+  for (const mode of modes) {
+    if (!YUV_MODES.includes(mode)) {
+      throw new Error(`--avif-yuv must be one of ${YUV_MODES.join(', ')} (got ${mode})`);
+    }
+  }
+  // Canonical order and deduped, so series order and cache keys don't depend on
+  // the order they were typed in.
+  return YUV_MODES.filter((m) => modes.includes(m));
+}
+
 function parseTiming(spec) {
   const modes = String(spec)
     .split(',')
@@ -134,7 +159,7 @@ export async function resolveConfig(values, positionals) {
       quality: parseRange(pick('avif-quality', 'avifQuality', rangeSpec(avif.defaults.quality)), { integer: true }),
       effort: parseRange(pick('avif-speed', 'avifSpeed', avif.defaults.effort.join(',')), { integer: true }),
       depth: parseRange(pick('avif-depth', 'avifDepth', avif.defaults.depth.join(',')), { integer: true }),
-      yuv: String(pick('avif-yuv', 'avifYuv', avif.defaults.yuv)),
+      yuv: parseYuvModes(pick('avif-yuv', 'avifYuv', avif.defaults.yuv)),
       qalpha: String(pick('avif-qalpha', 'avifQalpha', avif.defaults.qalpha)),
     },
 
@@ -189,9 +214,6 @@ function validate(config) {
   for (const d of config.avif.depth) {
     if (![8, 10, 12].includes(d)) throw new Error(`avifenc -d must be 8, 10 or 12, got ${d}`);
   }
-  if (!['444', '422', '420', '400'].includes(config.avif.yuv)) {
-    throw new Error(`--avif-yuv must be one of 444, 422, 420, 400 (got ${config.avif.yuv})`);
-  }
   if (config.avif.qalpha !== 'match') {
     const value = Number(config.avif.qalpha);
     if (Number.isNaN(value) || value < 0 || value > 100) {
@@ -219,7 +241,8 @@ Options:
   --avif-quality RANGE       avifenc -q  (default 20:90:5)
   --avif-speed RANGE         avifenc -s  (default 0-6; 0 is slowest)
   --avif-depth LIST          avifenc -d  (default 8; e.g. 8,10)
-  --avif-yuv MODE            444 | 422 | 420 | 400 (default 444)
+  --avif-yuv LIST            444 | 422 | 420 | 400, comma-separated
+                             (default 444; each mode is its own series)
   --avif-qalpha VALUE        'match' to track -q, or 0..100 (default match)
 
   --jxl-quality RANGE        cjxl -q     (default 15:90:5)
