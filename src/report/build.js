@@ -238,7 +238,13 @@ function formatBytes(bytes) {
 /** Caveats rendered into the report so the numbers are never read bare (§10). */
 export function buildCaveats({ run, results }) {
   const hasAlpha = run.reference.hasAlpha;
-  const hasDecode = results.some((r) => r.decode?.bestMs != null);
+  const decodeBrowsers = new Set();
+  for (const r of results) {
+    for (const [name, m] of Object.entries(r.decode ?? {})) {
+      if (m?.meanMs != null) decodeBrowsers.add(name);
+    }
+  }
+  const hasDecode = decodeBrowsers.size > 0;
   const caveats = [
     '<strong>SSIMULACRA2 is a proxy, not ground truth.</strong> It also shares authorship ' +
       'with libjxl, so treating it as a neutral referee between JXL and AVIF is a known weak ' +
@@ -296,16 +302,40 @@ export function buildCaveats({ run, results }) {
 
   if (hasDecode) {
     caveats.push(
-      '<strong>Decode times come from a browser, not from <code>avifdec</code>/' +
-        '<code>djxl</code>.</strong> They are measured with <code>createImageBitmap</code> in ' +
-        `${escapeHtml(run.browser?.version ?? 'a headless browser')}, which isolates the ` +
-        'decode from layout and paint. That makes them representative of what a page actually ' +
-        'pays — but they measure <em>that build\u2019s</em> decoders, so they will move as the ' +
-        'browser changes and are not a property of the formats themselves.',
+      '<strong>Decode times come from real browsers, not from <code>avifdec</code>/' +
+        '<code>djxl</code>.</strong> They are measured with <code>createImageBitmap</code> ' +
+        `in ${escapeHtml([...decodeBrowsers].join(', '))}, which isolates the decode from ` +
+        'layout and paint. That makes them representative of what a page actually pays — but ' +
+        'they measure <em>those builds\u2019</em> decoders, so they will move as the browsers ' +
+        'change and are not a property of the formats themselves.',
+      ...(decodeBrowsers.size > 1
+        ? [
+            '<strong>Decode figures are only comparable within one browser.</strong> Each ' +
+              'engine has its own decoders, and its own timer resolution: Firefox reports ' +
+              '0.02ms granularity where Chrome reports 0.1ms. Compare codecs down a column, ' +
+              'not browsers across one.',
+          ]
+        : []),
+      ...([...decodeBrowsers].includes('safari')
+        ? [
+            '<strong>Safari cannot run headless.</strong> Its numbers were measured in a ' +
+              'visible window, so they include whatever else the compositor was doing. Treat ' +
+              'them as slightly noisier than the headless engines.',
+          ]
+        : []),
       '<strong>Decode timing is all-cores wall clock.</strong> Browser image decoding is ' +
         'multi-threaded with no way to pin it, so unlike the encode columns there is no ' +
         'single-thread counterpart. It was measured serially with nothing else running, but ' +
         'it is still sensitive to machine load and core count.',
+      '<strong>Decode is a mean, where encode is a best-of-N.</strong> The difference is ' +
+        'deliberate: process-spawn noise is one-sided, so for encoding the minimum is the ' +
+        'cleanest estimate. Browser decode varies both ways — over 60 runs the minimum for a ' +
+        'lossless JXL came out at 9.6ms against a 14.1ms median, a 33% underestimate — so the ' +
+        'mean of many runs is reported instead, after discarding warm-up runs. Hover a point ' +
+        'for its standard deviation and run count.',
+      '<strong><code>performance.now()</code> is quantised to 0.1ms.</strong> For the ' +
+        'fastest decodes here that is a few percent of the measurement on its own, so treat ' +
+        'differences between sub-millisecond decodes as noise rather than signal.',
       '<strong>Chrome Canary is required for the JPEG XL half of this chart.</strong> Stable ' +
         'Chrome fails <code>createImageBitmap</code> on <code>.jxl</code> with "The source ' +
         'image could not be decoded", so a run against stable would silently chart AVIF only. ' +

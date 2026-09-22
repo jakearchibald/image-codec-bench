@@ -7,7 +7,8 @@ import { parseArgs } from 'node:util';
 
 import { ResultsStore, hashFileBytes, shortHash } from './cache.js';
 import { HELP, OPTIONS, resolveConfig } from './config.js';
-import { decodeIsStale, findBrowser, measureDecodeTimes } from './decode.js';
+import { resolveTarget } from './browsers.js';
+import { DECODE_SCHEMA, WARMUP_RUNS, measureDecodeTimes } from './decode.js';
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
 import { losslessSuite } from './lossless.js';
@@ -158,7 +159,7 @@ async function main(argv) {
     },
     config: serialisableConfig(config),
     tools: health.tools,
-    browser: null,
+    browsers: null,
     versions: health.versions,
     machine: health.machine,
     spawnOverheadMs: spawnOverhead,
@@ -214,80 +215,8 @@ async function main(argv) {
     process.stderr.write('\r\x1b[2K');
   }
 
-  // 7. Browser decode timing. Serial and uncontended, for the same reason the
-  //    encode phase is: a decode timed on a busy machine is not a timing.
-  let browser = null;
-  if (config.decodeTiming !== false) {
-    browser = await findBrowser(config.chrome);
-    if (!browser) {
-      if (config.decodeTiming === true) {
-        throw new Error(
-          'Decode timing was requested but no browser was found. Install Google Chrome ' +
-            'Canary, or pass --chrome PATH. Canary is needed because stable Chrome cannot ' +
-            'decode JPEG XL.',
-        );
-      }
-      if (!config.quiet) {
-        process.stdout.write(
-          'Decode timing skipped: Chrome Canary not found (pass --chrome PATH to override).\n',
-        );
-      }
-    }
-  }
-
-  if (browser) {
-    const scored = store.jobs.filter(
-      (job) => job.score !== undefined && gridKeys.has(job.key) && job.bitstream,
-    );
-    const stale = config.force
-      ? scored
-      : scored.filter((job) => decodeIsStale(job, browser.version));
-
-    if (!config.quiet) {
-      process.stdout.write(
-        `Decode timing ${stale.length} image(s) in ${browser.version}` +
-          `${stale.length < scored.length ? ` (${scored.length - stale.length} already measured)` : ''}...\n`,
-      );
-    }
-
-    if (stale.length > 0) {
-      const measured = await measureDecodeTimes({
-        binary: browser.path,
-        rootDir: runDir,
-        targets: stale.map((job) => ({ key: job.key, url: job.bitstream })),
-        repeats: config.decodeRepeats,
-        onProgress: (done, total) => {
-          if (!config.quiet && process.stderr.isTTY) {
-            process.stderr.write(`\r\x1b[2KDecoded ${done}/${total}`);
-          }
-        },
-      });
-      if (!config.quiet && process.stderr.isTTY) process.stderr.write('\r\x1b[2K');
-
-      for (const job of stale) {
-        const result = measured.get(job.key);
-        if (!result) continue;
-        if (result.error) {
-          // A decoder that can't read one of our files is worth surfacing, not
-          // silently leaving a gap in the chart.
-          decodeFailures.push(`${job.codec} q${job.quality} ${job.effortLabel}: ${result.error}`);
-          continue;
-        }
-        job.decode = { ...result, browser: browser.version };
-        await store.put(job);
-      }
-    }
-  }
-
-  // Decode timings are only comparable within one browser build, so record it.
-  if (store.data.run) {
-    store.data.run.browser = browser
-      ? { path: browser.path, version: browser.version, repeats: config.decodeRepeats }
-      : null;
-    await store.flush();
-  }
-
-  // 8. Lossless suite, with its hard assertions.
+  // 7. Lossless suite, with its hard assertions. Runs before decode timing so
+  //    its bitstreams exist by then and one browser launch covers everything.
   let losslessRows = store.lossless;
   if (config.lossless) {
     if (!config.quiet) process.stdout.write('Running lossless suite...\n');
@@ -307,6 +236,175 @@ async function main(argv) {
       },
     });
     await store.putLossless(losslessRows);
+  }
+
+  // 8. Browser decode timing, once per configured browser. Serial and
+  //    uncontended, for the same reason the encode phase is: a decode timed on
+  //    a busy machine is not a timing.
+  const browsersUsed = {};
+  for (const name of config.decodeBrowsers) {
+    const target = await resolveTarget(name, {
+      browser: config.browserPaths[name],
+      driver: config.driverPaths[name],
+    });
+
+    if (target.unavailable) {
+      const message = `Decode timing skipped for ${target.label}: ${target.unavailable}.${target.hint ? ` ${target.hint}` : ''}`;
+      // Explicitly asked for and not available is an error; the default set is
+      // best-effort, so a missing browser only costs a note.
+      if (config.decodeBrowsersExplicit) throw new Error(message);
+      if (!config.quiet) process.stdout.write(`${message}\n`);
+      continue;
+    }
+
+    if (!target.headless && !config.quiet) {
+      process.stdout.write(
+        `  ${target.label} has no headless mode: a window will open and take focus.\n`,
+      );
+    }
+
+    // Lossy grid and lossless rows in one pass. The lossless numbers matter on
+    // their own terms: a format can win on lossless size and lose on the time
+    // it costs to get the pixels back.
+    const lossyTargets = store.jobs
+      .filter((job) => job.score !== undefined && gridKeys.has(job.key) && job.bitstream)
+      .map((job) => ({
+        kind: 'job',
+        row: job,
+        key: job.key,
+        url: job.bitstream,
+        label: `${job.codec} q${job.quality} ${job.effortLabel}`,
+      }));
+
+    const losslessTargets = (losslessRows ?? [])
+      .filter((row) => !row.skipped)
+      // The source-PNG row has no bitstream of its own; point it at the
+      // reference so the table carries a familiar decode baseline.
+      .map((row) => ({
+        kind: 'lossless',
+        row,
+        key: `lossless:${row.codec}`,
+        url: row.bitstream ?? (row.isSource ? store.data.run.reference.path : null),
+        label: row.label ?? row.codec,
+      }))
+      .filter((entry) => entry.url);
+
+    const all = [...lossyTargets, ...losslessTargets];
+
+    // The browser version is only known once a session is open, so a first
+    // pass measures everything whose stored version is missing or different.
+    // Nothing to do at all is decided after the probe below.
+    let measuredVersion = null;
+    let stale = all;
+
+    if (!config.force) {
+      // Cheap pre-filter on the stored version: if every row already carries a
+      // measurement, open one short session just to check the version matches.
+      const anyMissing = all.some((entry) => !entry.row.decode?.[name]);
+      if (!anyMissing) {
+        const versions = new Set(all.map((entry) => entry.row.decode[name].browser));
+        const schemas = new Set(all.map((entry) => entry.row.decode[name].schema));
+        if (versions.size === 1 && schemas.size === 1 && schemas.has(DECODE_SCHEMA)) {
+          const probe = await measureDecodeTimes({
+            target,
+            rootDir: runDir,
+            targets: [all[0]].map(({ key, url }) => ({ key, url })),
+            repeats: 1,
+            warmup: 0,
+          }).catch(() => null);
+          if (!probe) {
+            // Can't confirm the version, so fall through and re-measure, which
+            // will surface the real error with its setup hint.
+            measuredVersion = null;
+          } else {
+          if (probe.version === [...versions][0]) {
+            browsersUsed[name] = {
+              label: target.label,
+              version: probe.version,
+              timerGranularityMs: probe.timerGranularityMs ?? null,
+            };
+            if (!config.quiet) {
+              process.stdout.write(
+                `Decode timing ${target.label}: all ${all.length} already measured in ${probe.version}.\n`,
+              );
+            }
+            continue;
+          }
+          measuredVersion = probe.version;
+          }
+        }
+      }
+    }
+
+    if (!config.quiet) {
+      process.stdout.write(`Decode timing ${all.length} image(s) in ${target.label}...\n`);
+    }
+
+    let measured;
+    try {
+      measured = await measureDecodeTimes({
+        target,
+        rootDir: runDir,
+        targets: stale.map(({ key, url }) => ({ key, url })),
+        repeats: config.decodeRepeats,
+        budgetMs: config.decodeBudgetMs,
+        onProgress: (done, total) => {
+          if (!config.quiet && process.stderr.isTTY) {
+            process.stderr.write(`\r\x1b[2K${target.label}: decoded ${done}/${total}`);
+          }
+        },
+      });
+    } catch (error) {
+      if (!config.quiet && process.stderr.isTTY) process.stderr.write('\r\x1b[2K');
+      // A driver that refuses a session usually needs a one-off setup step, and
+      // the driver's own message rarely says which. Attach the hint.
+      const message =
+        `${target.label}: ${error.message}` +
+        (target.setupHint ? `\n  ${target.setupHint}` : '');
+      if (config.decodeBrowsersExplicit) throw new Error(message);
+      if (!config.quiet) process.stdout.write(`Decode timing skipped — ${message}\n`);
+      continue;
+    }
+    if (!config.quiet && process.stderr.isTTY) process.stderr.write('\r\x1b[2K');
+
+    browsersUsed[name] = {
+      label: target.label,
+      version: measured.version ?? measuredVersion,
+      timerGranularityMs: measured.timerGranularityMs ?? null,
+    };
+
+    let losslessTouched = false;
+    for (const entry of stale) {
+      const result = measured.results.get(entry.key);
+      if (!result) continue;
+      if (result.error) {
+        // A decoder that can't read one of our files is worth surfacing, not
+        // silently leaving a gap in the chart.
+        decodeFailures.push(`${target.label} / ${entry.label}: ${result.error}`);
+        continue;
+      }
+      entry.row.decode = {
+        ...(entry.row.decode ?? {}),
+        [name]: { ...result, browser: measured.version },
+      };
+      if (entry.kind === 'job') await store.put(entry.row);
+      else losslessTouched = true;
+    }
+    if (losslessTouched) await store.putLossless(losslessRows);
+  }
+
+  // Decode timings are only comparable within one browser build, so record
+  // which build produced each set.
+  if (store.data.run) {
+    store.data.run.browsers = Object.keys(browsersUsed).length
+      ? {
+          repeats: config.decodeRepeats,
+          warmup: WARMUP_RUNS,
+          budgetMs: config.decodeBudgetMs,
+          targets: browsersUsed,
+        }
+      : null;
+    await store.flush();
   }
 
   // 9. Outputs.
@@ -410,6 +508,8 @@ function serialisableConfig(config) {
     scoreConcurrency: config.scoreConcurrency,
     lossless: config.lossless,
     decodeRepeats: config.decodeRepeats,
+    decodeBudgetMs: config.decodeBudgetMs,
+    decodeBrowsers: config.decodeBrowsers,
   };
 }
 

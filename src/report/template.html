@@ -177,7 +177,9 @@
         margin: 0;
       }
       /* ---- visual comparison ---- */
-      #compare-stage {
+      /* Shared by the header preview and the visual comparison, so the image at
+         the top is framed and sized exactly like the ones being compared. */
+      .stage {
         margin-top: 1rem;
         padding: 1rem;
         border: 1px solid var(--line);
@@ -187,7 +189,7 @@
         align-items: center;
         min-height: 200px;
       }
-      #compare-stage.bg-checker {
+      .stage.bg-checker {
         background-image:
           linear-gradient(
             45deg,
@@ -209,16 +211,16 @@
           10px 10px;
         background-color: #fff;
       }
-      #compare-stage.bg-white {
+      .stage.bg-white {
         background: #fff;
       }
-      #compare-stage.bg-black {
+      .stage.bg-black {
         background: #000;
       }
       /* Half intrinsic size is set per-image in JS; max-width keeps a large source
      from overflowing the viewport, at the cost of rendering below half size --
      the status line says so when that happens. */
-      #compare-stage img {
+      .stage img {
         display: block;
         max-width: 100%;
         height: auto;
@@ -301,6 +303,9 @@
       <h1>Image codec benchmark</h1>
       <p class="sub" id="subtitle"></p>
 
+      <div id="preview-stage" class="stage bg-black"></div>
+      <p class="hint" id="preview-caption"></p>
+
       <div class="banner err" id="jxl-banner" hidden>
         <h3>This browser cannot decode JPEG XL</h3>
         <p>
@@ -359,11 +364,7 @@
           decode. Same series as above.
         </p>
         <p class="hint" id="decode-note"></p>
-        <div class="controls">
-          <label class="inline"
-            ><input type="checkbox" id="decode-log" /> log-scale y</label
-          >
-        </div>
+        <div class="controls" id="decode-controls"></div>
         <div class="chart-wrap"><canvas id="chart-decode"></canvas></div>
       </section>
 
@@ -396,11 +397,17 @@
       <!-- Must match the checked backdrop radio above; syncBackdrop() re-applies
            it from the DOM on load and on back/forward, so this is only the
            pre-script value. -->
-      <div id="compare-stage" class="bg-black"></div>
+      <div id="compare-stage" class="stage bg-black"></div>
       <div id="compare-status">Loading variants…</div>
       <div class="variant-list" id="variant-list"></div>
 
       <h2>Lossless</h2>
+      <p class="hint" id="lossless-decode-note" hidden>
+        The <strong>Decode</strong> column is browser decode time, measured the same
+        way as Chart&nbsp;3. A format can win on lossless size and still cost more
+        to get the pixels back, so the two are worth reading together. The source
+        PNG row is the baseline.
+      </p>
       <p>
         Every row is decoded and asserted <strong>bit-exact</strong> against the
         reference <em>and</em> asserted to score exactly 100.00 — either check
@@ -568,7 +575,28 @@
       for (const points of bySeries.values())
         points.sort((a, b) => a.score - b.score);
 
-      const seriesIds = [...bySeries.keys()].sort();
+      // Canonical subsampling order, matching how --avif-yuv normalises it, so
+      // the legend reads the same way the CLI reports it.
+      const YUV_ORDER = ["444", "422", "420", "400"];
+
+      /**
+       * Order series by their underlying values, not by id string.
+       *
+       * Sorting the ids lexicographically put "jxl-e10-d8" before "jxl-e7-d8",
+       * because "1" sorts before "7". Effort is a number and has to be compared
+       * as one.
+       */
+      const seriesIds = [...bySeries.keys()].sort((a, b) => {
+        const x = bySeries.get(a)[0];
+        const y = bySeries.get(b)[0];
+        return (
+          x.codec.localeCompare(y.codec) ||
+          x.depth - y.depth ||
+          x.effort - y.effort ||
+          YUV_ORDER.indexOf(x.yuv ?? "") - YUV_ORDER.indexOf(y.yuv ?? "") ||
+          a.localeCompare(b)
+        );
+      });
       const colourOf = new Map(
         seriesIds.map((id, i) => [id, PALETTE[i % PALETTE.length]]),
       );
@@ -598,8 +626,17 @@
               : []),
           ];
           if (r.qalpha != null) lines.push(`qalpha: ${r.qalpha}`);
-          if (r.decode?.bestMs != null) {
-            lines.push(`decode: ${fmtMs(r.decode.bestMs)} (browser)`);
+          for (const [name, m] of Object.entries(r.decode ?? {})) {
+            if (m?.meanMs == null) continue;
+            // Spread alongside the mean, so a noisy measurement is visible
+            // rather than hidden behind one number. Guarded because a report
+            // rebuilt over pre-spread results would otherwise throw in here and
+            // take the whole tooltip with it.
+            const spread =
+              m.sdMs == null
+                ? ""
+                : ` ± ${m.sdMs.toFixed(2)} (n=${m.runs}, cv ${m.cvPercent.toFixed(1)}%)`;
+            lines.push(`decode ${name}: ${fmtMs(m.meanMs)}${spread}`);
           }
           for (const mode of run.config.timing) {
             const t = r.timings[mode];
@@ -744,27 +781,65 @@
       }
 
       /* ----------------------------------------------------- chart 3: decode cost */
-      // Only drawn when something measured it: the phase is skipped when Chrome
-      // Canary is absent, and an empty chart reads as "decode is free".
-      const hasDecode = results.some((r) => r.decode?.bestMs != null);
-      if (hasDecode) {
+      // Only drawn when something measured it: the phase can be skipped or a
+      // browser absent, and an empty chart reads as "decode is free".
+      const decodeBrowsers = [
+        ...new Set(
+          results.flatMap((r) =>
+            Object.entries(r.decode ?? {})
+              .filter(([, m]) => m?.meanMs != null)
+              .map(([name]) => name),
+          ),
+        ),
+      ].sort();
+
+      if (decodeBrowsers.length > 0) {
         document.getElementById("decode-section").hidden = false;
-        const browser = run.browser;
-        document.getElementById("decode-note").textContent = browser
-          ? `Measured in ${browser.version}, best of ${browser.repeats} runs per image. ` +
-            "Browser decoding is multi-threaded and not controllable, so this is " +
-            "all-cores wall clock with no single-thread counterpart."
-          : "";
+        const meta = run.browsers;
+        // One series set per browser: the decoders are different software, so
+        // this is a selector rather than extra lines on one chart. Comparing
+        // codecs down one browser is meaningful; across browsers is not.
+        let decodeBrowser = decodeBrowsers[0];
+
+        const describe = () => {
+          const target = meta?.targets?.[decodeBrowser];
+          if (!meta || !target) return "";
+          const timer = target.timerGranularityMs
+            ? ` Timer granularity ${target.timerGranularityMs}ms.`
+            : "";
+          return (
+            `${target.label} — ${target.version}: mean of up to ${meta.repeats} runs per ` +
+            `image after ${meta.warmup} discarded warm-up runs.${timer} Mean rather than ` +
+            "best-of-N because decode noise runs both ways — the minimum of a batch " +
+            "reports a decode nobody actually experiences. Browser decoding is " +
+            "multi-threaded and not controllable, so this is all-cores wall clock with no " +
+            "single-thread counterpart."
+          );
+        };
+        document.getElementById("decode-note").textContent = describe();
+
+        document.getElementById("decode-controls").innerHTML =
+          (decodeBrowsers.length > 1
+            ? "<span>Browser:</span>" +
+              decodeBrowsers
+                .map(
+                  (name, i) =>
+                    `<label class="inline"><input type="radio" name="decode-browser" value="${esc(name)}"${i === 0 ? " checked" : ""}> ` +
+                    `${esc(meta?.targets?.[name]?.label ?? name)}</label>`,
+                )
+                .join("")
+            : "") +
+          '<label class="inline"><input type="checkbox" id="decode-log"> log-scale y</label>';
 
         const decodeChart = new Chart(document.getElementById("chart-decode"), {
           type: "scatter",
-          data: { datasets: datasetsFor((r) => r.decode?.bestMs) },
+          data: { datasets: datasetsFor((r) => r.decode?.[decodeBrowser]?.meanMs) },
           options: {
             ...baseOptions(),
             scales: {
               ...baseOptions().scales,
               y: {
-                title: { display: true, text: "decode time (ms, best of N)" },
+                title: { display: true, text: "decode time (ms, mean)" },
                 type: "linear",
               },
             },
@@ -772,11 +847,25 @@
         });
 
         function refreshDecode() {
+          // Read from the DOM, so a browser-restored radio can't disagree with
+          // what is plotted.
+          decodeBrowser =
+            document.querySelector('input[name="decode-browser"]:checked')?.value ??
+            decodeBrowsers[0];
+          decodeChart.data.datasets = datasetsFor(
+            (r) => r.decode?.[decodeBrowser]?.meanMs,
+          );
           decodeChart.options.scales.y.type = document.getElementById("decode-log")
             .checked
             ? "logarithmic"
             : "linear";
+          document.getElementById("decode-note").textContent = describe();
           decodeChart.update();
+        }
+        for (const input of document.querySelectorAll(
+          'input[name="decode-browser"]',
+        )) {
+          input.addEventListener("change", refreshDecode);
         }
         document
           .getElementById("decode-log")
@@ -839,11 +928,22 @@
             '<p class="hint">Lossless suite not run.</p>';
           return;
         }
+        // Decode column only when something measured it, matching the charts.
+        const losslessBrowsers = [
+          ...new Set(
+            lossless.flatMap((row) =>
+              Object.entries(row.decode ?? {})
+                .filter(([, m]) => m?.meanMs != null)
+                .map(([name]) => name),
+            ),
+          ),
+        ].sort();
         const head = [
           "Config",
           "Bytes",
           "bpp",
           ...modes.map((m) => (m === "multi" ? "Multi" : "Single")),
+          ...losslessBrowsers.map((name) => `dec ${name}`),
           "SSIMULACRA2",
           "Bit-exact",
         ];
@@ -854,6 +954,7 @@
               "skipped",
               "—",
               ...modes.map(() => "—"),
+              ...losslessBrowsers.map(() => "—"),
               "—",
               "—",
             ];
@@ -862,6 +963,7 @@
             row.bytes.toLocaleString(),
             row.bpp?.toFixed(4) ?? "—",
             ...modes.map((m) => fmtMs(row.timings?.[m]?.bestMs)),
+            ...losslessBrowsers.map((name) => fmtMs(row.decode?.[name]?.meanMs)),
             row.score == null ? "—" : row.score.toFixed(2),
             row.bitExact == null ? "—" : row.bitExact ? "yes" : "NO",
           ];
@@ -877,9 +979,22 @@
             : "");
       }
       renderLosslessTable();
+      if (lossless.some((row) => decodeBrowsers.some((b) => row.decode?.[b]?.meanMs != null))) {
+        document.getElementById("lossless-decode-note").hidden = false;
+      }
 
       /* --------------------------------------------------- visual comparison */
       const stage = document.getElementById("compare-stage");
+      const previewStage = document.getElementById("preview-stage");
+
+      /**
+       * Half intrinsic size: what a site does serving 2x imagery to a high-DPR
+       * display. Width only, so height stays proportional. Shared by the header
+       * preview and the comparison so the two are directly comparable.
+       */
+      function sizeToHalf(img) {
+        img.width = Math.round(img.naturalWidth / 2);
+      }
       const status = document.getElementById("compare-status");
       const variants = DATA.variants;
       let current = null;
@@ -904,7 +1019,10 @@
         const checked = document.querySelector(
           'input[name="backdrop"]:checked',
         );
-        stage.className = `bg-${checked?.value ?? "checker"}`;
+        // Both stages, so the preview and the comparison never disagree.
+        for (const element of [previewStage, stage]) {
+          element.className = `stage bg-${checked?.value ?? "checker"}`;
+        }
       }
 
       for (const input of document.querySelectorAll('input[name="backdrop"]')) {
@@ -1025,9 +1143,7 @@
         }
         // A newer show() started while this one was decoding; it owns the stage now.
         if (token !== showToken) return;
-        // Half intrinsic size: exactly what a site does serving 2x imagery to a
-        // high-DPR display. Width only, so height stays proportional.
-        img.width = Math.round(img.naturalWidth / 2);
+        sizeToHalf(img);
         stage.replaceChildren(img);
         current = index;
         currentFailed = false;
@@ -1095,6 +1211,43 @@
       }
 
       /**
+       * Show the image the whole report is about, so a reader knows what they
+       * are looking at before any chart.
+       *
+       * Uses the lossless reference -- pixel-identical to the original, and
+       * served as .jxl through the same decode path as the variants below --
+       * falling back to the original PNG where JPEG XL cannot be decoded.
+       */
+      async function renderPreview(jxlOk) {
+        const reference = variants.find((v) => v.isReference);
+        const original = variants.find((v) => v.isOriginal);
+        const chosen =
+          reference && (jxlOk || reference.codec !== "jxl")
+            ? reference
+            : original;
+        if (!chosen) return;
+
+        for (const candidate of [chosen, original]) {
+          if (!candidate) continue;
+          const img = new Image();
+          img.src = candidate.src;
+          img.alt = `${run.input.split("/").pop()} — ${candidate.name}`;
+          try {
+            await img.decode();
+          } catch {
+            continue; // Try the fallback rather than leaving a broken image.
+          }
+          sizeToHalf(img);
+          previewStage.replaceChildren(img);
+          document.getElementById("preview-caption").textContent =
+            `${run.reference.width}×${run.reference.height}, ` +
+            `${run.reference.depth}-bit ${run.reference.hasAlpha ? "RGBA" : "RGB"} — ` +
+            `${candidate.name}, shown at half size like the comparison below.`;
+          return;
+        }
+      }
+
+      /**
        * The comparison serves real .jxl files, so a browser without JXL shows broken
        * images in a test whose whole purpose is judging by eye. Probe and say so.
        */
@@ -1115,6 +1268,10 @@
           document.getElementById("jxl-banner").hidden = false;
           document.getElementById("jxl-flag-hint").textContent = jxlProbe.hint;
         }
+        // Before preloading everything else: the reader should see the image
+        // without waiting on every variant to decode.
+        await renderPreview(jxlOk);
+
         const failures = await preload();
 
         // Mark undecodable variants up front, so the limitation is visible before

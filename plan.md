@@ -233,29 +233,75 @@ in a real browser.
 - **`createImageBitmap` is the measurement.** It isolates the decode — no layout, no
   paint, no CSS scaling — and resolves only once the image is fully decoded, so awaiting
   it times the decode and nothing else.
-- **Driven over the Chrome DevTools Protocol** from Node: a temporary localhost server
-  serves the run directory, headless Chrome navigates to it, and one
-  `Runtime.evaluate` per batch of 20 images returns the samples. No Puppeteer, no
-  dependency.
-- **Chrome Canary is required**, verified on this machine: Canary 156 decodes JPEG XL
-  through `createImageBitmap`, stable Chrome 153 fails with *"The source image could not
-  be decoded"*. Canary needs no flag — it decodes JXL even with
-  `--disable-features=JXL` — so the requirement is the channel, not a switch. Without JXL
-  the chart would cover AVIF only, which defeats the comparison. Missing browser skips the
-  phase with a note rather than failing the run; a decoder that rejects a file is reported
-  as a warning rather than left as a gap in the chart.
+- **Driven over classic W3C WebDriver** from Node: a temporary localhost server serves the
+  run directory, the browser navigates to it, and one `execute/async` call per batch of 20
+  images returns the samples. No Puppeteer, no client library — just `fetch` against the
+  driver's HTTP API.
+- **Classic WebDriver rather than CDP or BiDi.** The benchmark needs exactly three things
+  — navigate, run an async script, get JSON back — and classic WebDriver provides all
+  three on every driver that exists. CDP is Chrome-only (Firefox removed it). BiDi works on
+  Chrome and Firefox — verified both — but Chrome needs chromedriver for it anyway, and
+  Safari's BiDi support is still landing. Classic is the only protocol that reaches all
+  three engines today.
+- **Three targets**, selected with `--decode-browsers` (default `firefox`, which has the
+  finer clock — 0.02ms granularity against Chrome's 0.1ms, on decodes as fast as 1ms):
+  - **Chrome Canary** via chromedriver. Canary specifically: verified that Canary 156
+    decodes JPEG XL through `createImageBitmap` while stable Chrome 153 fails with *"The
+    source image could not be decoded"*. No flag needed — Canary decodes JXL even with
+    `--disable-features=JXL`.
+  - **Firefox Nightly** (the default) via geckodriver, with two mandatory prefs: `image.jxl.enabled`
+    (JXL is behind a flag) and `privacy.reduceTimerPrecision=false`. Without the second,
+    Firefox clamps `performance.now()` to 1ms, which is useless for 1-20ms decodes; with
+    it off, granularity is 0.02ms — five times finer than Chrome's 0.1ms.
+  - **Safari** via the `safaridriver` that ships with macOS. Requires a one-off manual
+    step — Develop → *Allow Remote Automation* — which cannot be automated, so the
+    resulting session error carries that instruction. Safari has no headless mode, so a
+    window opens and its numbers are correspondingly noisier.
+- **Drivers are resolved, not assumed.** chromedriver must match Chrome's *major* version
+  (verified: chromedriver 156.0.8067.0 drives Chrome 156.0.8068.0) and Canary moves daily,
+  so a version-matched build is downloaded and cached under
+  `~/.cache/image-codec-bench/drivers` when PATH has nothing suitable. geckodriver is
+  fetched the same way. `--chromedriver` / `--geckodriver` / `--safaridriver` override.
+- **A named browser is required; the default set is best-effort.** Asking for Safari and
+  silently getting nothing would be worse than an error, so `--decode-browsers` failures
+  are fatal while a missing browser in the default set costs a note. A decoder that rejects
+  a file is reported as a warning rather than left as a gap in the chart.
 - **Fetched once, re-wrapped per iteration.** The bytes are fetched into an `ArrayBuffer`
   so the network is never on the clock, then a fresh `Blob` is made for each run. Verified
   that repeat timings stay flat and non-zero this way, i.e. nothing comes from a
   decoded-image cache.
-- **Best-of-N**, matching the encode timings. The first sample carries codec init and JIT
-  warm-up — measured 5.1ms against a 2.0ms steady state — so the mean would overstate it.
-- **Stamped with the browser build, not keyed on it.** Decode times are only comparable
-  within one build and Canary updates most days, so each measurement records its build and
-  is re-measured when that changes. Putting the build in the job cache key would invalidate
-  every *encode* on a browser update and throw away hours of work.
-- Runs **serially, after scoring, with nothing else in flight**, for the same reason the
-  encode phase does.
+- **Mean of up to 20 runs, after 2 discarded warm-up runs** — deliberately *unlike* the
+  encode timings, which use best-of-N. Process-spawn noise is one-sided, so for encoding the
+  minimum is the cleanest estimate. Browser decode varies both ways: measured over 60 runs,
+  a lossless JXL had a **9.6ms minimum against a 14.1ms median**, a 33% underestimate, so
+  best-of-N there reports a decode nobody experiences. Warm-up is discarded rather than
+  averaged in (a first sample of 5.1ms against a 2.0ms steady state was observed).
+- **The spread is recorded and shown**, not hidden behind one number: median, min, max,
+  standard deviation, coefficient of variation and the run count all go into
+  `results.json`, the CSV carries sd and n, and the chart tooltip shows `mean ± sd`.
+  Measured CV is typically 3-11%, rising to ~30% for the fastest decodes where
+  `performance.now()`'s 0.1ms quantisation is itself a few percent of the measurement —
+  which is why sub-millisecond differences should be read as noise.
+- **A per-image time budget** (`--decode-budget`, default 2s, minimum 5 runs) keeps this
+  tractable at full resolution, where a single decode can cost hundreds of milliseconds and
+  20 runs across a whole grid would add up to many minutes.
+- **Keyed by browser, and stamped with the build.** `decode` is a map of browser name to
+  measurement, so the engines never get averaged together — they are different software
+  with different costs, which is the whole reason for measuring more than one. Each entry
+  records its build and is re-measured when that changes. Putting the build in the job
+  cache key would invalidate every *encode* on a browser update and throw away hours of
+  work.
+- **Figures are comparable within a browser, not across.** Each engine has its own
+  decoders and its own timer resolution, so Chart 3 offers a browser selector rather than
+  drawing every engine on one set of axes. Compare codecs down a column; don't compare
+  browsers across one.
+- Runs **serially, after scoring and after the lossless suite, with nothing else in
+  flight**, for the same reason the encode phase does. Ordering it after lossless means one
+  browser launch covers the lossy grid *and* the lossless rows.
+- **The lossless rows are measured too**, including the source PNG as a baseline. Lossless
+  size and lossless decode cost pull in different directions and are worth reading together:
+  measured on the test image, WebP came within 1.6% of JXL's size while decoding roughly 5×
+  faster (2.9ms vs 14ms), and AVIF was both the largest and the slowest (19ms).
 - Browser decoding is multi-threaded with no way to pin it, so this is all-cores wall
   clock with no single-thread counterpart.
 
@@ -266,9 +312,9 @@ in a real browser.
   is the main result: lower and further right is better.
 - **Chart 2 — encode cost.** x = SSIMULACRA2, y = encode time, same series, with a
   single-thread / all-cores toggle.
-- **Chart 3 — decode cost.** x = SSIMULACRA2, y = browser decode time (best of N), same
-  series, log-scale toggle. Hidden entirely when nothing measured it, since an empty chart
-  reads as "decode is free".
+- **Chart 3 — decode cost.** x = SSIMULACRA2, y = browser decode time (mean), same series,
+  with a browser selector and a log-scale toggle. Hidden entirely when nothing measured it,
+  since an empty chart reads as "decode is free".
 - Both charts: legend click to isolate series, shared tooltip showing every recorded field,
   crosshair. **Chart.js 4** via CDN — scatter with `showLine: true` handles this directly
   and the report stays a single file. Trade-off: viewing the report needs network access. If

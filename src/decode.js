@@ -14,23 +14,11 @@
 // not a switch. Without JXL the decode chart would only cover AVIF, which
 // defeats the point of comparing.
 
-import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import os from 'node:os';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { run } from './exec.js';
-
-/** Where Chrome Canary usually lives, by platform. */
-const CANARY_PATHS = {
-  darwin: ['/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'],
-  linux: ['/usr/bin/google-chrome-canary', '/usr/bin/google-chrome-unstable'],
-  win32: [
-    'C:\\Program Files\\Google\\Chrome SxS\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome SxS\\Application\\chrome.exe',
-  ],
-};
+import { openSession } from './webdriver.js';
 
 const MIME = {
   '.avif': 'image/avif',
@@ -44,25 +32,31 @@ const MIME = {
 const BATCH_SIZE = 20;
 
 /**
- * Locate the browser. An explicit path always wins, so a different Chromium
- * build can be substituted.
+ * Iterations discarded before measuring. The first decode of a given codec
+ * carries one-off costs -- codec init, JIT -- and measured 5.0ms against a
+ * 2.0ms steady state on a JXL file.
  */
-export async function findBrowser(explicitPath) {
-  const candidates = explicitPath
-    ? [explicitPath]
-    : (CANARY_PATHS[process.platform] ?? []);
+export const WARMUP_RUNS = 2;
 
-  for (const candidate of candidates) {
-    try {
-      const { stdout } = await run(candidate, ['--version'], { allowFailure: true });
-      const version = stdout.trim();
-      if (version) return { path: candidate, version };
-    } catch {
-      // Not this one; keep looking.
-    }
-  }
-  return null;
-}
+/**
+ * Stop collecting once this much time has gone into one image, provided
+ * MIN_RUNS samples are in hand. Decodes are milliseconds at small sizes but
+ * hundreds of milliseconds at full resolution, where 20 runs per image across
+ * a full grid would add up to many minutes.
+ */
+export const DEFAULT_BUDGET_MS = 2000;
+export const MIN_RUNS = 5;
+
+/**
+ * Methodology version for a stored decode measurement. Bump this whenever what
+ * is measured or how it is summarised changes, so existing runs re-measure
+ * instead of mixing methodologies in one chart.
+ *
+ * 1: best-of-5, no spread recorded.
+ * 2: mean of up to 20 after discarded warm-up, with median/sd/cv.
+ * 3: keyed per browser, driven over classic WebDriver.
+ */
+export const DECODE_SCHEMA = 3;
 
 /**
  * Decode timings are only comparable within one browser build, and Canary
@@ -71,9 +65,13 @@ export async function findBrowser(explicitPath) {
  * key: a Canary update would otherwise invalidate every encode too, throwing
  * away hours of work to re-measure something unrelated.
  */
-export function decodeIsStale(job, browserVersion) {
-  if (!job?.decode) return true;
-  return job.decode.browser !== browserVersion;
+export function decodeIsStale(row, browserName, browserVersion) {
+  const measured = row?.decode?.[browserName];
+  if (!measured) return true;
+  // Measured under an older methodology: the numbers are not comparable with
+  // current ones, and the fields the report expects may not even be there.
+  if (measured.schema !== DECODE_SCHEMA) return true;
+  return measured.browser !== browserVersion;
 }
 
 /** Serve `rootDir` read-only on a random localhost port. */
@@ -116,208 +114,165 @@ async function serveDirectory(rootDir) {
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
-/** Launch headless Chrome and resolve the DevTools WebSocket URL it prints. */
-async function launchBrowser(binary, profileDir) {
-  const proc = spawn(
-    binary,
-    [
-      '--headless=new',
-      '--remote-debugging-port=0',
-      `--user-data-dir=${profileDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-extensions',
-      '--disable-background-networking',
-      // Software decode only, so timings reflect the CPU decoder rather than
-      // whatever GPU happens to be in the machine.
-      '--disable-gpu',
-      'about:blank',
-    ],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-
-  const browserWs = await new Promise((resolve, reject) => {
-    let buffer = '';
-    const timer = setTimeout(
-      () => reject(new Error('Browser did not report a DevTools endpoint within 20s')),
-      20_000,
-    );
-    proc.stderr.on('data', (chunk) => {
-      buffer += chunk;
-      const match = buffer.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) {
-        clearTimeout(timer);
-        resolve(match[1]);
-      }
-    });
-    proc.once('exit', (code) => {
-      clearTimeout(timer);
-      reject(new Error(`Browser exited early (code ${code})`));
-    });
-  });
-
-  return { proc, browserWs };
-}
-
-/** Attach to the first page target, retrying while the browser starts up. */
-async function attachToPage(browserWs) {
-  const port = new URL(browserWs).port;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    const page = targets.find((t) => t.type === 'page')?.webSocketDebuggerUrl;
-    if (page) return page;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error('No page target appeared in the browser');
-}
-
-/** Thin CDP client: send a command, await its reply. */
-function cdpClient(socket) {
-  let nextId = 0;
-  return {
-    send(method, params = {}) {
-      const id = ++nextId;
-      return new Promise((resolve, reject) => {
-        const onMessage = (event) => {
-          const message = JSON.parse(event.data);
-          if (message.id !== id) return;
-          socket.removeEventListener('message', onMessage);
-          if (message.error) reject(new Error(`${method}: ${message.error.message}`));
-          else resolve(message.result);
-        };
-        socket.addEventListener('message', onMessage);
-        socket.send(JSON.stringify({ id, method, params }));
-      });
-    },
-    waitForEvent(method) {
-      return new Promise((resolve) => {
-        const onMessage = (event) => {
-          const message = JSON.parse(event.data);
-          if (message.method !== method) return;
-          socket.removeEventListener('message', onMessage);
-          resolve(message.params);
-        };
-        socket.addEventListener('message', onMessage);
-      });
-    },
-  };
-}
-
 /**
- * The in-page benchmark.
+ * The in-page benchmark, as a classic-WebDriver async script.
+ *
+ * WebDriver hands the script a callback as its last argument, so the body ends
+ * by calling it rather than returning a promise.
  *
  * Fetched once into an ArrayBuffer so the network is never on the clock, then
  * re-wrapped in a fresh Blob per iteration -- verified that repeat timings stay
  * flat and non-zero this way, i.e. nothing is served from a decoded-image
- * cache. The first sample runs warm-up costs (codec init, JIT) and is the
- * reason the headline figure is best-of-N rather than the mean.
+ * cache. Warm-up iterations are run and discarded, then samples are collected
+ * until the repeat count or the time budget is reached.
  */
-function benchmarkExpression(urls, repeats) {
-  return `(async () => {
-    const files = ${JSON.stringify(urls)};
-    const out = {};
-    for (const [key, url] of Object.entries(files)) {
-      try {
-        const buffer = await (await fetch(url)).arrayBuffer();
-        const samples = [];
-        for (let i = 0; i < ${repeats}; i += 1) {
-          const blob = new Blob([buffer.slice(0)]);
-          const started = performance.now();
-          const bitmap = await createImageBitmap(blob);
-          samples.push(performance.now() - started);
-          bitmap.close();
+function benchmarkScript({ repeats, warmup, budgetMs, minRuns }) {
+  return `
+    const urls = arguments[0];
+    const done = arguments[arguments.length - 1];
+    (async () => {
+      const out = {};
+      const decode = async (buffer) => {
+        const blob = new Blob([buffer.slice(0)]);
+        const started = performance.now();
+        const bitmap = await createImageBitmap(blob);
+        const elapsed = performance.now() - started;
+        bitmap.close();
+        return elapsed;
+      };
+      for (const entry of urls) {
+        try {
+          const buffer = await (await fetch(entry.url)).arrayBuffer();
+          const warmupMs = [];
+          for (let i = 0; i < ${warmup}; i += 1) warmupMs.push(await decode(buffer));
+          const samples = [];
+          let spent = 0;
+          while (samples.length < ${repeats}) {
+            const elapsed = await decode(buffer);
+            samples.push(elapsed);
+            spent += elapsed;
+            if (samples.length >= ${minRuns} && spent > ${budgetMs}) break;
+          }
+          out[entry.key] = { samples: samples, warmupMs: warmupMs };
+        } catch (error) {
+          out[entry.key] = { error: error.name + ': ' + error.message };
         }
-        out[key] = { samples };
-      } catch (error) {
-        out[key] = { error: error.name + ': ' + error.message };
       }
-    }
-    return out;
-  })()`;
+      return out;
+    })().then(done, (error) => done({ __fatal: String(error) }));
+  `;
 }
+
+/** Report the timer granularity, which bounds how fine a decode can be read. */
+const TIMER_SCRIPT = `
+  const done = arguments[arguments.length - 1];
+  const deltas = new Set();
+  let last = performance.now();
+  for (let i = 0; i < 200000; i += 1) {
+    const now = performance.now();
+    if (now !== last) { deltas.add(Number((now - last).toFixed(6))); last = now; }
+  }
+  done(Math.min.apply(null, Array.from(deltas)));
+`;
 
 /**
  * Measure decode time for each entry of `targets` ({ key, url } relative to
- * `rootDir`). Returns a Map of key -> { bestMs, meanMs, runs, samplesMs } or
- * { error }.
+ * `rootDir`) in one browser.
  *
  * Runs serially with nothing else in flight, for the same reason the encode
  * phase does: a decode timed against a busy machine is not a decode timing.
  */
 export async function measureDecodeTimes({
-  binary,
+  target,
   rootDir,
   targets,
-  repeats = 5,
+  repeats = 20,
+  warmup = WARMUP_RUNS,
+  budgetMs = DEFAULT_BUDGET_MS,
   onProgress = () => {},
 }) {
-  if (targets.length === 0) return new Map();
+  if (targets.length === 0) return { results: new Map() };
 
   const { server, origin } = await serveDirectory(rootDir);
-  const profileDir = await mkdtemp(path.join(os.tmpdir(), 'icb-chrome-'));
-  let proc = null;
-  let socket = null;
+  let session = null;
 
   try {
-    const launched = await launchBrowser(binary, profileDir);
-    proc = launched.proc;
-    const pageWs = await attachToPage(launched.browserWs);
-
-    socket = new WebSocket(pageWs);
-    await new Promise((resolve, reject) => {
-      socket.addEventListener('open', resolve, { once: true });
-      socket.addEventListener('error', () => reject(new Error('CDP socket failed')), { once: true });
+    session = await openSession({
+      driverPath: target.driverPath,
+      capabilities: target.capabilities,
     });
 
-    const cdp = cdpClient(socket);
-    await cdp.send('Runtime.enable');
-    await cdp.send('Page.enable');
+    // Navigate before running anything: a blank document has no origin that
+    // can fetch, which shows up as a fetch failure for every image and looks
+    // exactly like a broken decoder.
+    await session.navigate(`${origin}/`);
 
-    // Navigate before evaluating. The page target exists before the launch URL
-    // has loaded, and about:blank is an opaque origin where every fetch fails
-    // CORS -- which looks exactly like a broken decoder.
-    const loaded = cdp.waitForEvent('Page.loadEventFired');
-    await cdp.send('Page.navigate', { url: `${origin}/` });
-    await loaded;
+    const timerGranularityMs = await session.executeAsync(TIMER_SCRIPT).catch(() => null);
 
     const results = new Map();
     for (let i = 0; i < targets.length; i += BATCH_SIZE) {
       const batch = targets.slice(i, i + BATCH_SIZE);
-      const urls = Object.fromEntries(
-        batch.map(({ key, url }) => [key, `${origin}/${url.split(path.sep).join('/')}`]),
+      const urls = batch.map(({ key, url }) => ({
+        key,
+        url: `${origin}/${url.split(path.sep).join('/')}`,
+      }));
+
+      const value = await session.executeAsync(
+        benchmarkScript({ repeats, warmup, budgetMs, minRuns: Math.min(MIN_RUNS, repeats) }),
+        [urls],
       );
 
-      const evaluated = await cdp.send('Runtime.evaluate', {
-        expression: benchmarkExpression(urls, repeats),
-        awaitPromise: true,
-        returnByValue: true,
-      });
+      if (value?.__fatal) throw new Error(`Decode benchmark threw: ${value.__fatal}`);
 
-      if (evaluated.exceptionDetails) {
-        throw new Error(`Decode benchmark threw: ${evaluated.exceptionDetails.text}`);
-      }
-
-      for (const [key, value] of Object.entries(evaluated.result.value ?? {})) {
-        results.set(key, value.error ? { error: value.error } : summarise(value.samples));
+      for (const [key, entry] of Object.entries(value ?? {})) {
+        results.set(
+          key,
+          entry.error ? { error: entry.error } : summarise(entry.samples, entry.warmupMs),
+        );
       }
       onProgress(Math.min(i + batch.length, targets.length), targets.length);
     }
 
-    return results;
+    return { results, version: session.version, timerGranularityMs };
   } finally {
-    socket?.close();
-    proc?.kill('SIGKILL');
+    await session?.quit().catch(() => {});
     server.close();
-    await rm(profileDir, { recursive: true, force: true });
   }
 }
 
-/** Best-of-N headline with the mean alongside, matching the encode timings. */
-export function summarise(samples) {
+/**
+ * Summarise decode samples. The headline is the **mean**, not best-of-N.
+ *
+ * Encode timings use best-of-N because process-spawn noise is one-sided --
+ * interference only ever makes a run slower. Browser decode is not like that:
+ * over 60 runs the minimum for a lossless JXL came out at 9.6ms against a
+ * 14.1ms median, a 33% underestimate, because the spread goes both ways
+ * (thread scheduling, and performance.now() quantised to 0.1ms). Taking the
+ * minimum there reports a decode nobody actually experiences.
+ *
+ * The median and standard deviation come along so the spread stays visible
+ * rather than being hidden behind a single number.
+ */
+export function summarise(samples, warmupMs = []) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const n = sorted.length;
+  const mean = sorted.reduce((a, b) => a + b, 0) / n;
+  const variance = sorted.reduce((sum, ms) => sum + (ms - mean) ** 2, 0) / n;
+  const sd = Math.sqrt(variance);
+  const round = (ms) => Number(ms.toFixed(4));
+
   return {
-    bestMs: Math.min(...samples),
-    meanMs: samples.reduce((a, b) => a + b, 0) / samples.length,
-    runs: samples.length,
-    samplesMs: samples.map((ms) => Number(ms.toFixed(4))),
+    schema: DECODE_SCHEMA,
+    meanMs: mean,
+    medianMs: n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2,
+    minMs: sorted[0],
+    maxMs: sorted[n - 1],
+    sdMs: sd,
+    // Relative spread, so a noisy measurement is obvious without comparing
+    // against the absolute scale of the image.
+    cvPercent: mean > 0 ? (sd / mean) * 100 : 0,
+    runs: n,
+    warmupMs: warmupMs.map(round),
+    samplesMs: sorted.map(round),
   };
 }

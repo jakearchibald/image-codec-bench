@@ -204,8 +204,11 @@ export async function losslessSuite({
     await rm(referenceRaw, { force: true });
   }
 
-  // The source PNG, for reference -- not a codec result, so no score.
+  // The source PNG, for reference -- not a codec result, so no score. Rebuilt
+  // every run rather than cached by key, since it is just a stat of a file we
+  // already have.
   const { size: sourceBytes } = await stat(reference.path);
+  const cachedSource = (cachedRows ?? []).find((row) => row.codec === 'png');
   rows.push({
     codec: 'png',
     label: 'source PNG (normalised reference)',
@@ -214,6 +217,10 @@ export async function losslessSuite({
     score: null,
     bitExact: null,
     timings: {},
+    // Carry over any decode measurement. Being rebuilt each run would
+    // otherwise drop it, and this row would be the one image re-measured in
+    // the browser on every resume.
+    ...(!force && cachedSource?.decode ? { decode: cachedSource.decode } : {}),
     isSource: true,
     skipped: false,
   });

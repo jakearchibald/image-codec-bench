@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { DEFAULT_TARGETS, parseTargets } from './browsers.js';
 import { avif, jxl } from './codecs/index.js';
 import { parseRange } from './schedule.js';
 
@@ -28,10 +29,15 @@ export const OPTIONS = {
   'repeat-budget': { type: 'string' },
   'max-pixels': { type: 'string' },
   'score-concurrency': { type: 'string' },
-  'decode-timing': { type: 'boolean' },
+  'decode-browsers': { type: 'string' },
   'no-decode-timing': { type: 'boolean' },
   'decode-repeats': { type: 'string' },
+  'decode-budget': { type: 'string' },
   chrome: { type: 'string' },
+  firefox: { type: 'string' },
+  chromedriver: { type: 'string' },
+  geckodriver: { type: 'string' },
+  safaridriver: { type: 'string' },
 
   lossless: { type: 'boolean' },
   'no-lossless': { type: 'boolean' },
@@ -181,16 +187,26 @@ export async function resolveConfig(values, positionals) {
     maxPixels: parsePixels(pick('max-pixels', 'maxPixels', 0)),
     scoreConcurrency: Number(pick('score-concurrency', 'scoreConcurrency', defaultConcurrency())),
 
-    // Browser decode timing. Default is "auto": on when Chrome Canary is
-    // found, skipped with a note when it isn't, so the run never fails just
-    // because a browser is absent.
-    decodeTiming: values['no-decode-timing'] === true || fileConfig.decodeTiming === false
-      ? false
-      : values['decode-timing'] === true || fileConfig.decodeTiming === true
-        ? true
-        : 'auto',
-    decodeRepeats: Number(pick('decode-repeats', 'decodeRepeats', 5)),
-    chrome: values.chrome ?? fileConfig.chrome ?? null,
+    // Browser decode timing. The default set is best-effort: a browser that
+    // isn't installed costs a note, not a failed run. Naming browsers
+    // explicitly makes them required, since asking for Safari and silently
+    // getting nothing is worse than an error.
+    decodeBrowsers: values['no-decode-timing'] === true || fileConfig.decodeTiming === false
+      ? []
+      : parseTargets(pick('decode-browsers', 'decodeBrowsers', DEFAULT_TARGETS.join(','))),
+    decodeBrowsersExplicit: Boolean(values['decode-browsers'] ?? fileConfig.decodeBrowsers),
+    browserPaths: {
+      chrome: values.chrome ?? fileConfig.chrome ?? null,
+      firefox: values.firefox ?? fileConfig.firefox ?? null,
+    },
+    driverPaths: {
+      chrome: values.chromedriver ?? fileConfig.chromedriver ?? null,
+      firefox: values.geckodriver ?? fileConfig.geckodriver ?? null,
+      safari: values.safaridriver ?? fileConfig.safaridriver ?? null,
+      'safari-preview': null,
+    },
+    decodeRepeats: Number(pick('decode-repeats', 'decodeRepeats', 20)),
+    decodeBudgetMs: parseDuration(pick('decode-budget', 'decodeBudget', '2s')),
 
     lossless: losslessDisabled ? false : losslessRequested || fileConfig.lossless !== false,
     dryRun: values['dry-run'] === true,
@@ -222,6 +238,9 @@ function validate(config) {
   }
   if (!Number.isInteger(config.decodeRepeats) || config.decodeRepeats < 1) {
     throw new Error('--decode-repeats must be an integer >= 1');
+  }
+  if (!(config.decodeBudgetMs > 0)) {
+    throw new Error('--decode-budget must be greater than zero');
   }
   for (const q of config.avif.quality) {
     if (q < 0 || q > 100) throw new Error(`avifenc -q out of range: ${q} (expected 0..100)`);
@@ -276,10 +295,21 @@ Options:
   --max-pixels N             downscale source to fit N pixels (default 0 = off)
   --score-concurrency N      parallel scoring jobs (default cores-2, max 8)
 
+  --decode-browsers LIST     chrome, firefox, safari, safari-preview,
+                             all, none (default firefox). Named browsers are
+                             required; the default set is best-effort.
   --no-decode-timing         skip browser decode timing
-  --decode-repeats N         createImageBitmap runs per image (default 5)
-  --chrome PATH              browser binary (default: Chrome Canary, required
-                             for JPEG XL decode -- stable Chrome cannot)
+  --decode-repeats N         createImageBitmap runs per image (default 20;
+                             the mean is reported, warm-up runs discarded)
+  --decode-budget DURATION   stop repeating an image past this cumulative
+                             time, min 5 runs (default 2s)
+  --chrome PATH              Chrome binary (default: Canary, which is required
+                             for JPEG XL -- stable Chrome cannot decode it)
+  --firefox PATH             Firefox binary (default: Nightly, required for JXL)
+  --chromedriver PATH        driver override; otherwise a version-matched
+                             chromedriver is downloaded and cached
+  --geckodriver PATH         driver override; otherwise downloaded and cached
+  --safaridriver PATH        driver override (default /usr/bin/safaridriver)
 
   --no-lossless              skip the lossless suite
   --dry-run                  calibrate, print job count and ETA, then stop

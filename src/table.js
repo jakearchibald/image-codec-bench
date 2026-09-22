@@ -53,10 +53,28 @@ const COLUMNS = [
     align: 'right',
     format: (v) => formatMs(v),
   },
-  // Browser decode, always all-cores wall clock: createImageBitmap gives no
-  // thread control, so there is no single-thread counterpart here.
-  { key: 'decode.bestMs', header: 'decode', align: 'right', format: (v) => formatMs(v) },
 ];
+
+/**
+ * One decode column per browser that measured something. Decode is keyed by
+ * browser because the decoders are different software with different costs --
+ * the whole reason for measuring more than one.
+ */
+function decodeColumns(results) {
+  const names = new Set();
+  for (const row of results) {
+    for (const name of Object.keys(row.decode ?? {})) {
+      if (row.decode[name]?.meanMs != null) names.add(name);
+    }
+  }
+  return [...names].sort().map((name) => ({
+    key: `decode.${name}.meanMs`,
+    header: `dec ${name}`,
+    align: 'right',
+    format: (v) => formatMs(v),
+    csvHeader: `decode_${name}_mean_ms`,
+  }));
+}
 
 function formatMs(ms) {
   if (ms == null) return '--';
@@ -75,16 +93,28 @@ function get(object, dottedKey) {
  * Only show timing columns for modes that were actually measured, and only show
  * the decode column when something measured it.
  */
-function activeColumns(timingModes, { decode = true } = {}) {
-  return COLUMNS.filter((column) => {
-    if (column.key === 'decode.bestMs') return decode;
+function activeColumns(timingModes, results = []) {
+  const base = COLUMNS.filter((column) => {
     if (!column.key.startsWith('timings.')) return true;
     const mode = column.key.split('.')[1];
     return timingModes.includes(mode);
   });
+  return [...base, ...decodeColumns(results)];
 }
 
-const hasDecode = (results) => results.some((r) => r.decode?.bestMs != null);
+/** Browsers with at least one measurement across `rows`. */
+export function decodeBrowsersIn(rows) {
+  const names = new Set();
+  for (const row of rows) {
+    for (const [name, measured] of Object.entries(row.decode ?? {})) {
+      if (measured?.meanMs != null) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/** Canonical subsampling order, matching how --avif-yuv normalises it. */
+const YUV_ORDER = ['444', '422', '420', '400'];
 
 export function sortResults(results) {
   return [...results].sort(
@@ -92,13 +122,16 @@ export function sortResults(results) {
       a.codec.localeCompare(b.codec) ||
       a.depth - b.depth ||
       a.effort - b.effort ||
+      // Without this, rows at the same effort and quality but different
+      // subsampling came out in whatever order they happened to be measured.
+      YUV_ORDER.indexOf(a.yuv ?? '') - YUV_ORDER.indexOf(b.yuv ?? '') ||
       a.quality - b.quality,
   );
 }
 
 export function formatTable(results, timingModes = ['single', 'multi']) {
   if (results.length === 0) return '(no results)';
-  const columns = activeColumns(timingModes, { decode: hasDecode(results) });
+  const columns = activeColumns(timingModes, results);
   const rows = sortResults(results).map((result) =>
     columns.map((column) => {
       const value = get(result, column.key);
@@ -123,8 +156,8 @@ export function formatTable(results, timingModes = ['single', 'multi']) {
 }
 
 export function toCsv(results, timingModes = ['single', 'multi']) {
-  const columns = activeColumns(timingModes, { decode: hasDecode(results) });
-  const header = columns.map((c) => csvHeader(c.key)).join(',');
+  const columns = activeColumns(timingModes, results);
+  const header = columns.map((c) => c.csvHeader ?? csvHeader(c.key)).join(',');
   const lines = sortResults(results).map((result) =>
     columns
       .map((column) => {
@@ -140,7 +173,6 @@ export function toCsv(results, timingModes = ['single', 'multi']) {
 }
 
 function csvHeader(key) {
-  if (key === 'decode.bestMs') return 'decode_best_ms';
   return key
     .replace(/^timings\./, '')
     .replace(/\.bestMs$/, '_best_ms')
@@ -156,8 +188,12 @@ function csvCell(value) {
 
 /** Lossless table as CSV, kept separate since its columns differ. */
 export function losslessToCsv(rows, timingModes = ['single', 'multi']) {
+  const browsers = decodeBrowsersIn(rows);
   const header = ['config', 'codec', 'bytes', 'bpp', 'ssimulacra2', 'bit_exact'];
   for (const mode of timingModes) header.push(`${mode}_best_ms`);
+  for (const name of browsers) {
+    header.push(`decode_${name}_mean_ms`, `decode_${name}_sd_ms`, `decode_${name}_runs`);
+  }
   const lines = rows
     .filter((row) => !row.skipped)
     .map((row) => {
@@ -172,22 +208,40 @@ export function losslessToCsv(rows, timingModes = ['single', 'multi']) {
       for (const mode of timingModes) {
         cells.push(row.timings?.[mode] ? String(row.timings[mode].bestMs) : '');
       }
+      for (const name of browsers) {
+        const measured = row.decode?.[name];
+        cells.push(measured?.meanMs == null ? '' : String(measured.meanMs));
+        cells.push(measured?.sdMs == null ? '' : String(measured.sdMs));
+        cells.push(measured?.runs == null ? '' : String(measured.runs));
+      }
       return cells.join(',');
     });
   return `${[header.join(','), ...lines].join('\n')}\n`;
 }
 
 export function formatLosslessTable(rows, timingModes = ['single', 'multi']) {
+  const browsers = decodeBrowsersIn(rows);
   const header = ['Config', 'Bytes'];
   for (const mode of timingModes) header.push(mode === 'multi' ? 'Multi' : 'Single');
+  for (const name of browsers) header.push(`dec ${name}`);
   header.push('SSIMULACRA2', 'Bit-exact');
 
   const body = rows.map((row) => {
-    if (row.skipped) return [row.label ?? row.codec, 'skipped', ...timingModes.map(() => '--'), '--', '--'];
+    if (row.skipped) {
+      return [
+        row.label ?? row.codec,
+        'skipped',
+        ...timingModes.map(() => '--'),
+        ...browsers.map(() => '--'),
+        '--',
+        '--',
+      ];
+    }
     const cells = [row.label, row.bytes.toLocaleString('en-US')];
     for (const mode of timingModes) {
       cells.push(row.timings?.[mode] ? formatMs(row.timings[mode].bestMs) : '--');
     }
+    for (const name of browsers) cells.push(formatMs(row.decode?.[name]?.meanMs));
     cells.push(row.score == null ? '--' : row.score.toFixed(2));
     cells.push(row.bitExact == null ? '--' : row.bitExact ? 'yes' : 'NO');
     return cells;

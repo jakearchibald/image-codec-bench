@@ -55,7 +55,7 @@ Written to `out/<image-stem>-<hash8>/`:
 | `reference.png` | the normalised 8-bit sRGB source everything was measured against |
 | `results.json` | this run's grid plus run metadata; what the report is built from |
 | `full-results.json` | every job ever measured against this reference; the resume cache |
-| `results.csv`, `lossless.csv` | the same numbers, flat |
+| `results.csv`, `lossless.csv` | the same numbers, flat (including decode times) |
 | `assets/` | one bitstream per job; accumulates, like `full-results.json` |
 | `report-assets/` | only the files `report.html` links; rebuilt each run |
 | `report.html` | charts, visual comparison, lossless table, caveats |
@@ -82,6 +82,25 @@ the earlier ones stay in `full-results.json` and are reused rather than re-encod
    SSIMULACRA2, delete the decoded PNG immediately (they are megabytes each).
 4. **Lossless suite** for JXL, WebP and AVIF, each asserted bit-exact *and* asserted to
    score exactly 100.00.
+5. **Phase 3 — browser decode timing, serial.** `createImageBitmap` in a real browser,
+   driven over classic W3C WebDriver, for the lossy grid and the lossless rows. Mean of up
+   to `--decode-repeats` runs after discarded warm-up, with the spread recorded.
+
+Decode targets are chosen with `--decode-browsers` (default `firefox`; `all` for every
+one). Firefox Nightly is the default because it is the finer instrument — 0.02ms timer
+granularity against Chrome's 0.1ms, which matters when the fastest decodes are around 1ms:
+
+| target | driver | notes |
+|---|---|---|
+| `chrome` | chromedriver | **Canary required** — stable Chrome cannot decode JPEG XL |
+| `firefox` *(default)* | geckodriver | **Nightly required**; sets `image.jxl.enabled` and turns off `privacy.reduceTimerPrecision`, which otherwise clamps the clock to 1ms |
+| `safari` | safaridriver (built in) | needs Develop → *Allow Remote Automation* once, by hand; no headless mode, so a window opens |
+
+A version-matched chromedriver and a geckodriver are downloaded and cached under
+`~/.cache/image-codec-bench/drivers` if PATH has nothing suitable. Override with
+`--chromedriver` / `--geckodriver` / `--safaridriver`. Decode figures are comparable
+*within* a browser, not across — each engine has its own decoders and timer resolution — so
+Chart 3 has a browser selector rather than putting them on shared axes.
 
 Jobs run in **bisection order** on the quality axis (`min, max, mid, ¼, ¾, …`) and are
 **interleaved across series**, so an interrupted run still has a correctly-shaped curve for
