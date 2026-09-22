@@ -217,8 +217,47 @@ Written to `out/<image-stem>-<hash8>/`:
 - `results.csv` and a console table — codec, quality, effort, depth, size, bpp,
   SSIMULACRA2, encode time (single, best/mean), encode time (multi, best/mean).
 - `report.html` — self-contained apart from the chart library (see below).
-- `assets/` — the encoded `.avif` / `.jxl` bitstreams used by the visual comparison, linked
-  as-is. Kilobytes, not megabytes.
+- `assets/` — the encoded `.avif` / `.jxl` bitstreams, one per job. Accumulates across runs
+  alongside `full-results.json`; kilobytes each, not megabytes.
+- `report-assets/` — only the files `report.html` actually links: the reference PNG and the
+  handful of bitstreams in the visual comparison. Rebuilt each run, so it never carries stale
+  picks. `report.html` plus this folder is the whole report and can be moved or published
+  on its own.
+
+## 6b. Browser decode timing
+
+Encode cost is only half the story: what a page pays is *decode* cost, and
+`avifdec`/`djxl` are not the decoders anyone actually runs. So decode is measured
+in a real browser.
+
+- **`createImageBitmap` is the measurement.** It isolates the decode — no layout, no
+  paint, no CSS scaling — and resolves only once the image is fully decoded, so awaiting
+  it times the decode and nothing else.
+- **Driven over the Chrome DevTools Protocol** from Node: a temporary localhost server
+  serves the run directory, headless Chrome navigates to it, and one
+  `Runtime.evaluate` per batch of 20 images returns the samples. No Puppeteer, no
+  dependency.
+- **Chrome Canary is required**, verified on this machine: Canary 156 decodes JPEG XL
+  through `createImageBitmap`, stable Chrome 153 fails with *"The source image could not
+  be decoded"*. Canary needs no flag — it decodes JXL even with
+  `--disable-features=JXL` — so the requirement is the channel, not a switch. Without JXL
+  the chart would cover AVIF only, which defeats the comparison. Missing browser skips the
+  phase with a note rather than failing the run; a decoder that rejects a file is reported
+  as a warning rather than left as a gap in the chart.
+- **Fetched once, re-wrapped per iteration.** The bytes are fetched into an `ArrayBuffer`
+  so the network is never on the clock, then a fresh `Blob` is made for each run. Verified
+  that repeat timings stay flat and non-zero this way, i.e. nothing comes from a
+  decoded-image cache.
+- **Best-of-N**, matching the encode timings. The first sample carries codec init and JIT
+  warm-up — measured 5.1ms against a 2.0ms steady state — so the mean would overstate it.
+- **Stamped with the browser build, not keyed on it.** Decode times are only comparable
+  within one build and Canary updates most days, so each measurement records its build and
+  is re-measured when that changes. Putting the build in the job cache key would invalidate
+  every *encode* on a browser update and throw away hours of work.
+- Runs **serially, after scoring, with nothing else in flight**, for the same reason the
+  encode phase does.
+- Browser decoding is multi-threaded with no way to pin it, so this is all-cores wall
+  clock with no single-thread counterpart.
 
 ## 7. HTML report
 
@@ -227,6 +266,9 @@ Written to `out/<image-stem>-<hash8>/`:
   is the main result: lower and further right is better.
 - **Chart 2 — encode cost.** x = SSIMULACRA2, y = encode time, same series, with a
   single-thread / all-cores toggle.
+- **Chart 3 — decode cost.** x = SSIMULACRA2, y = browser decode time (best of N), same
+  series, log-scale toggle. Hidden entirely when nothing measured it, since an empty chart
+  reads as "decode is free".
 - Both charts: legend click to isolate series, shared tooltip showing every recorded field,
   crosshair. **Chart.js 4** via CDN — scatter with `showLine: true` handles this directly
   and the report stays a single file. Trade-off: viewing the report needs network access. If
@@ -249,9 +291,18 @@ Written to `out/<image-stem>-<hash8>/`:
     visibility of artifacts depends entirely on what's composited underneath.
   - Shows the **slowest configured effort** for each codec, plus the original and JXL
     lossless, per the original plan.
-  - Variants are chosen by **nearest measured SSIMULACRA2 to target values (60/70/80/90)**,
-    not by quality setting. Matching on the measured metric is the only way to put the two
+  - Variants are chosen by **nearest measured SSIMULACRA2 to a set of score targets**, not
+    by quality setting. Matching on the measured metric is the only way to put the two
     codecs genuinely side by side.
+  - The targets are **derived from the run**, not fixed: four points evenly spaced across
+    the *overlap* of the codecs' achieved score ranges, so each one is reachable by all of
+    them. (Where the ranges don't overlap there is nothing to compare, so it falls back to
+    the union.) Fixed 60/70/80/90 targets failed at both ends — a low-quality-only run
+    matched none of them and produced an empty comparison, while a run clustered near the
+    top wasted three of four slots.
+  - Labels show the **measured** score, never the target. The target only spreads the picks
+    across the range; printing it is what previously required a ±5 tolerance to avoid
+    calling a 45 a "~60", and that tolerance was the thing emptying the comparison.
   - Serves the **real encoded files** — `.avif` and `.jxl` linked directly, with the JXL
     lossless variant as an actual `.jxl` — decoded natively by the browser. Targets nightly
     browsers with JPEG XL enabled.
@@ -347,14 +398,15 @@ Caveats:
   parallelises poorly, which is why single-thread timings are collected alongside.
 - Encode timings include process spawn overhead (reported, not subtracted).
 
-Non-goals for now, easy to add later: decode-time measurement, other subsampling modes
+Non-goals for now, easy to add later: other subsampling modes
 beyond the configurable `--avif-yuv`, *lossy* WebP/JPEG baseline curves (lossless WebP is
 already in, per §7), BD-rate aggregation across a corpus.
 
 ## 11. Decisions I made without asking — flag any you disagree with
 
 - Best-of-N as the headline timing, mean also recorded.
-- Visual-comparison variants matched on measured score (60/70/80/90) rather than quality setting.
+- Visual-comparison variants matched on measured score rather than quality setting, with
+  the targets derived from the run's achieved range.
 - Chart.js 4 from CDN rather than vendored (report needs network to view).
 - Report gates the visual comparison behind a JXL capability check rather than failing silently.
 - Lossless correctness asserted bit-exact; a failure aborts the run.

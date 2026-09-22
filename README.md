@@ -56,6 +56,8 @@ Written to `out/<image-stem>-<hash8>/`:
 | `results.json` | this run's grid plus run metadata; what the report is built from |
 | `full-results.json` | every job ever measured against this reference; the resume cache |
 | `results.csv`, `lossless.csv` | the same numbers, flat |
+| `assets/` | one bitstream per job; accumulates, like `full-results.json` |
+| `report-assets/` | only the files `report.html` links; rebuilt each run |
 | `report.html` | charts, visual comparison, lossless table, caveats |
 | `assets/` | the encoded `.avif`/`.jxl`/`.webp` bitstreams the report links |
 
@@ -129,5 +131,5 @@ duration parsing, codec argv construction, and the scoring assertions.
 
 ## Not included
 
-Decode-time measurement, subsampling beyond `--avif-yuv`, lossy WebP/JPEG baseline curves
+Subsampling beyond `--avif-yuv`, lossy WebP/JPEG baseline curves
 (lossless WebP is in), BD-rate aggregation across a corpus.

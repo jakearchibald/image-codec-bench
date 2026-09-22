@@ -133,7 +133,7 @@ test('the lossless JXL is the comparison reference, with a PNG fallback', async 
       bytes: 1000, bpp: 0.1, bitstream: 'assets/a.jxl', key: 'k1' },
   ];
 
-  const withLossless = pickVariants({
+  const { variants: withLossless } = pickVariants({
     results,
     lossless: [{ codec: 'jxl', bytes: 5000, bitstream: 'assets/lossless-jxl.jxl' }],
     referenceRelPath: 'reference.png',
@@ -143,7 +143,11 @@ test('the lossless JXL is the comparison reference, with a PNG fallback', async 
   assert.equal(withLossless.filter((v) => v.isReference).length, 1);
 
   // --no-lossless, or a skipped row: the original PNG has to stand in.
-  const without = pickVariants({ results, lossless: [], referenceRelPath: 'reference.png' });
+  const { variants: without } = pickVariants({
+    results,
+    lossless: [],
+    referenceRelPath: 'reference.png',
+  });
   const fallback = without.find((v) => v.isReference);
   assert.ok(fallback.isOriginal, 'falls back to the original PNG');
   assert.equal(without.filter((v) => v.isReference).length, 1);
@@ -199,4 +203,154 @@ test('partitionCached reports every key in the grid, not just the cached ones', 
     versions,
   });
   assert.ok(!keys.has(outside), 'a different effort is a different grid member');
+});
+
+test('report-assets holds only the linked files, rebuilt each time', async (t) => {
+  const { collectReportAssets, REPORT_ASSETS_DIR } = await import('../src/report/build.js');
+  const { mkdir, mkdtemp, readdir, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = (await import('node:path')).default;
+
+  const runDir = await mkdtemp(path.join(tmpdir(), 'icb-assets-'));
+  t.after(() => rm(runDir, { recursive: true, force: true }));
+  await mkdir(path.join(runDir, 'assets'), { recursive: true });
+  await writeFile(path.join(runDir, 'reference.png'), 'ref');
+  for (const name of ['a.avif', 'b.jxl', 'unused.avif']) {
+    await writeFile(path.join(runDir, 'assets', name), name);
+  }
+
+  const first = await collectReportAssets({
+    runDir,
+    variants: [
+      { name: 'Original', src: 'reference.png' },
+      { name: 'A', src: 'assets/a.avif' },
+      { name: 'B', src: 'assets/b.jxl' },
+    ],
+  });
+  assert.deepEqual(first.missing, []);
+  assert.deepEqual(
+    (await readdir(path.join(runDir, REPORT_ASSETS_DIR))).sort(),
+    ['a.avif', 'b.jxl', 'reference.png'],
+    'unused.avif is not copied',
+  );
+  assert.deepEqual(first.variants.map((v) => v.src), [
+    'report-assets/reference.png',
+    'report-assets/a.avif',
+    'report-assets/b.jxl',
+  ]);
+
+  // A narrower second run must not leave the first run's extra files behind,
+  // or the folder stops being "only what is needed".
+  const second = await collectReportAssets({
+    runDir,
+    variants: [{ name: 'Original', src: 'reference.png' }],
+  });
+  assert.deepEqual(await readdir(path.join(runDir, REPORT_ASSETS_DIR)), ['reference.png']);
+  assert.deepEqual(second.missing, []);
+
+  // A missing source drops that variant instead of failing the whole report,
+  // which would waste a run that may have taken hours.
+  const third = await collectReportAssets({
+    runDir,
+    variants: [
+      { name: 'Original', src: 'reference.png' },
+      { name: 'Gone', src: 'assets/deleted.avif' },
+    ],
+  });
+  assert.deepEqual(third.missing, ['Gone']);
+  assert.deepEqual(third.variants.map((v) => v.name), ['Original']);
+});
+
+test('report-assets keeps distinct sources that share a basename apart', async (t) => {
+  const { collectReportAssets } = await import('../src/report/build.js');
+  const { mkdir, mkdtemp, readdir, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = (await import('node:path')).default;
+
+  const runDir = await mkdtemp(path.join(tmpdir(), 'icb-collide-'));
+  t.after(() => rm(runDir, { recursive: true, force: true }));
+  for (const dir of ['one', 'two']) {
+    await mkdir(path.join(runDir, dir), { recursive: true });
+    await writeFile(path.join(runDir, dir, 'same.avif'), dir);
+  }
+
+  const { variants } = await collectReportAssets({
+    runDir,
+    variants: [
+      { name: 'One', src: 'one/same.avif' },
+      { name: 'Two', src: 'two/same.avif' },
+    ],
+  });
+  assert.equal(new Set(variants.map((v) => v.src)).size, 2, 'the two must not collapse');
+  assert.equal((await readdir(path.join(runDir, 'report-assets'))).length, 2);
+});
+
+test('score targets come from the overlap of the codecs\' achieved ranges', async () => {
+  const { deriveScoreTargets } = await import('../src/report/build.js');
+  // Overlap is 44..72: above avif's floor and below jxl's ceiling, so every
+  // target is reachable by both and the flip test compares like with like.
+  const targets = deriveScoreTargets(new Map([['avif', [44, 60, 81]], ['jxl', [42, 56, 72]]]));
+  assert.deepEqual(targets, [44, 53, 63, 72]);
+});
+
+test('score targets fall back to the union when ranges do not overlap', async () => {
+  const { deriveScoreTargets } = await import('../src/report/build.js');
+  // Nothing is comparable here, but returning no targets would mean an empty
+  // comparison; the report warns about non-overlap separately.
+  assert.deepEqual(
+    deriveScoreTargets(new Map([['avif', [85, 90]], ['jxl', [40, 50]]])),
+    [40, 57, 73, 90],
+  );
+});
+
+test('a low-quality-only run still gets a comparison', async () => {
+  const { deriveScoreTargets, pickVariants } = await import('../src/report/build.js');
+  // Regression: with targets fixed at 60/70/80/90 and a +-5 tolerance, a run
+  // scoring ~44 matched none of them and the comparison held only the original.
+  assert.ok(deriveScoreTargets(new Map([['avif', [44.9]], ['jxl', [42.5]]])).length > 0);
+
+  const { variants } = pickVariants({
+    results: [
+      { codec: 'avif', effort: 6, score: 44.95, quality: 40, effortLabel: 's6', depth: 8,
+        yuv: '444', bytes: 7083, bpp: 0.29, bitstream: 'assets/a.avif', key: 'k1' },
+      { codec: 'jxl', effort: 7, score: 42.51, quality: 40, effortLabel: 'e7', depth: 8,
+        yuv: null, bytes: 5469, bpp: 0.22, bitstream: 'assets/b.jxl', key: 'k2' },
+    ],
+    lossless: [],
+    referenceRelPath: 'reference.png',
+  });
+  assert.ok(variants.some((v) => v.codec === 'avif'), 'avif is represented');
+  assert.ok(variants.some((v) => v.codec === 'jxl'), 'jxl is represented');
+});
+
+test('variants are labelled with the measured score, not the target', async () => {
+  const { pickVariants } = await import('../src/report/build.js');
+  const { variants } = pickVariants({
+    results: [
+      { codec: 'avif', effort: 6, score: 81.2, quality: 80, effortLabel: 's6', depth: 8,
+        yuv: '444', bytes: 100, bpp: 0.1, bitstream: 'assets/a.avif', key: 'k1' },
+      { codec: 'avif', effort: 6, score: 29.18, quality: 30, effortLabel: 's6', depth: 8,
+        yuv: '444', bytes: 50, bpp: 0.05, bitstream: 'assets/c.avif', key: 'k3' },
+    ],
+    lossless: [],
+    referenceRelPath: 'reference.png',
+  });
+  // Naming a variant after the target is what previously required a tolerance
+  // to avoid calling a 45 a "~60".
+  for (const v of variants.filter((x) => !x.isOriginal)) {
+    assert.match(v.name, new RegExp(`~${Math.round(v.score)}\\b`));
+  }
+});
+
+test('two targets landing on one encode yield a single variant', async () => {
+  const { pickVariants } = await import('../src/report/build.js');
+  const { variants } = pickVariants({
+    results: [
+      { codec: 'avif', effort: 6, score: 70, quality: 60, effortLabel: 's6', depth: 8,
+        yuv: '444', bytes: 100, bpp: 0.1, bitstream: 'assets/a.avif', key: 'only' },
+    ],
+    lossless: [],
+    referenceRelPath: 'reference.png',
+  });
+  assert.equal(variants.filter((v) => v.key === 'only').length, 1);
 });

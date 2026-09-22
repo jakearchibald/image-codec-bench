@@ -351,6 +351,22 @@
         </p>
       </div>
 
+      <section id="decode-section" hidden>
+        <h2>Chart 3 — decode cost</h2>
+        <p>
+          x = SSIMULACRA2, y = decode time (best of N), measured in the browser
+          with <code>createImageBitmap</code> — no layout, no paint, just the
+          decode. Same series as above.
+        </p>
+        <p class="hint" id="decode-note"></p>
+        <div class="controls">
+          <label class="inline"
+            ><input type="checkbox" id="decode-log" /> log-scale y</label
+          >
+        </div>
+        <div class="chart-wrap"><canvas id="chart-decode"></canvas></div>
+      </section>
+
       <h2>Visual comparison</h2>
       <p>
         The question here is
@@ -428,7 +444,6 @@
         warnings,
         caveats,
         nonGoals,
-        targets,
         jxlProbe,
         depthAxisCodecs,
       } = DATA;
@@ -583,6 +598,9 @@
               : []),
           ];
           if (r.qalpha != null) lines.push(`qalpha: ${r.qalpha}`);
+          if (r.decode?.bestMs != null) {
+            lines.push(`decode: ${fmtMs(r.decode.bestMs)} (browser)`);
+          }
           for (const mode of run.config.timing) {
             const t = r.timings[mode];
             if (t)
@@ -723,6 +741,54 @@
           .getElementById("cost-log")
           .addEventListener("change", refreshCost);
         syncCharts = refreshCost;
+      }
+
+      /* ----------------------------------------------------- chart 3: decode cost */
+      // Only drawn when something measured it: the phase is skipped when Chrome
+      // Canary is absent, and an empty chart reads as "decode is free".
+      const hasDecode = results.some((r) => r.decode?.bestMs != null);
+      if (hasDecode) {
+        document.getElementById("decode-section").hidden = false;
+        const browser = run.browser;
+        document.getElementById("decode-note").textContent = browser
+          ? `Measured in ${browser.version}, best of ${browser.repeats} runs per image. ` +
+            "Browser decoding is multi-threaded and not controllable, so this is " +
+            "all-cores wall clock with no single-thread counterpart."
+          : "";
+
+        const decodeChart = new Chart(document.getElementById("chart-decode"), {
+          type: "scatter",
+          data: { datasets: datasetsFor((r) => r.decode?.bestMs) },
+          options: {
+            ...baseOptions(),
+            scales: {
+              ...baseOptions().scales,
+              y: {
+                title: { display: true, text: "decode time (ms, best of N)" },
+                type: "linear",
+              },
+            },
+          },
+        });
+
+        function refreshDecode() {
+          decodeChart.options.scales.y.type = document.getElementById("decode-log")
+            .checked
+            ? "logarithmic"
+            : "linear";
+          decodeChart.update();
+        }
+        document
+          .getElementById("decode-log")
+          .addEventListener("change", refreshDecode);
+
+        // Chained rather than replaced: syncFormState calls syncCharts once, and
+        // the cost chart already claimed it.
+        const previousSync = syncCharts;
+        syncCharts = () => {
+          previousSync();
+          refreshDecode();
+        };
       }
 
       /* ---------------------------------------------------------------- tables */

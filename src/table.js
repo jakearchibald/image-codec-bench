@@ -53,11 +53,17 @@ const COLUMNS = [
     align: 'right',
     format: (v) => formatMs(v),
   },
+  // Browser decode, always all-cores wall clock: createImageBitmap gives no
+  // thread control, so there is no single-thread counterpart here.
+  { key: 'decode.bestMs', header: 'decode', align: 'right', format: (v) => formatMs(v) },
 ];
 
 function formatMs(ms) {
   if (ms == null) return '--';
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  // Browser decodes land in the single-digit milliseconds, where rounding to a
+  // whole ms throws away most of the difference between codecs.
+  if (ms < 10) return `${ms.toFixed(1)}ms`;
   return `${ms.toFixed(0)}ms`;
 }
 
@@ -65,14 +71,20 @@ function get(object, dottedKey) {
   return dottedKey.split('.').reduce((value, key) => (value == null ? value : value[key]), object);
 }
 
-/** Only show timing columns for modes that were actually measured. */
-function activeColumns(timingModes) {
+/**
+ * Only show timing columns for modes that were actually measured, and only show
+ * the decode column when something measured it.
+ */
+function activeColumns(timingModes, { decode = true } = {}) {
   return COLUMNS.filter((column) => {
+    if (column.key === 'decode.bestMs') return decode;
     if (!column.key.startsWith('timings.')) return true;
     const mode = column.key.split('.')[1];
     return timingModes.includes(mode);
   });
 }
+
+const hasDecode = (results) => results.some((r) => r.decode?.bestMs != null);
 
 export function sortResults(results) {
   return [...results].sort(
@@ -86,7 +98,7 @@ export function sortResults(results) {
 
 export function formatTable(results, timingModes = ['single', 'multi']) {
   if (results.length === 0) return '(no results)';
-  const columns = activeColumns(timingModes);
+  const columns = activeColumns(timingModes, { decode: hasDecode(results) });
   const rows = sortResults(results).map((result) =>
     columns.map((column) => {
       const value = get(result, column.key);
@@ -111,7 +123,7 @@ export function formatTable(results, timingModes = ['single', 'multi']) {
 }
 
 export function toCsv(results, timingModes = ['single', 'multi']) {
-  const columns = activeColumns(timingModes);
+  const columns = activeColumns(timingModes, { decode: hasDecode(results) });
   const header = columns.map((c) => csvHeader(c.key)).join(',');
   const lines = sortResults(results).map((result) =>
     columns
@@ -128,6 +140,7 @@ export function toCsv(results, timingModes = ['single', 'multi']) {
 }
 
 function csvHeader(key) {
+  if (key === 'decode.bestMs') return 'decode_best_ms';
   return key
     .replace(/^timings\./, '')
     .replace(/\.bestMs$/, '_best_ms')

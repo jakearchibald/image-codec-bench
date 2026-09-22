@@ -28,6 +28,10 @@ export const OPTIONS = {
   'repeat-budget': { type: 'string' },
   'max-pixels': { type: 'string' },
   'score-concurrency': { type: 'string' },
+  'decode-timing': { type: 'boolean' },
+  'no-decode-timing': { type: 'boolean' },
+  'decode-repeats': { type: 'string' },
+  chrome: { type: 'string' },
 
   lossless: { type: 'boolean' },
   'no-lossless': { type: 'boolean' },
@@ -177,6 +181,17 @@ export async function resolveConfig(values, positionals) {
     maxPixels: parsePixels(pick('max-pixels', 'maxPixels', 0)),
     scoreConcurrency: Number(pick('score-concurrency', 'scoreConcurrency', defaultConcurrency())),
 
+    // Browser decode timing. Default is "auto": on when Chrome Canary is
+    // found, skipped with a note when it isn't, so the run never fails just
+    // because a browser is absent.
+    decodeTiming: values['no-decode-timing'] === true || fileConfig.decodeTiming === false
+      ? false
+      : values['decode-timing'] === true || fileConfig.decodeTiming === true
+        ? true
+        : 'auto',
+    decodeRepeats: Number(pick('decode-repeats', 'decodeRepeats', 5)),
+    chrome: values.chrome ?? fileConfig.chrome ?? null,
+
     lossless: losslessDisabled ? false : losslessRequested || fileConfig.lossless !== false,
     dryRun: values['dry-run'] === true,
     force: values.force === true,
@@ -204,6 +219,9 @@ function validate(config) {
   }
   if (!Number.isInteger(config.scoreConcurrency) || config.scoreConcurrency < 1) {
     throw new Error('--score-concurrency must be an integer >= 1');
+  }
+  if (!Number.isInteger(config.decodeRepeats) || config.decodeRepeats < 1) {
+    throw new Error('--decode-repeats must be an integer >= 1');
   }
   for (const q of config.avif.quality) {
     if (q < 0 || q > 100) throw new Error(`avifenc -q out of range: ${q} (expected 0..100)`);
@@ -257,6 +275,11 @@ Options:
   --repeat-budget DURATION   stop repeating past this cumulative time (default 2s)
   --max-pixels N             downscale source to fit N pixels (default 0 = off)
   --score-concurrency N      parallel scoring jobs (default cores-2, max 8)
+
+  --no-decode-timing         skip browser decode timing
+  --decode-repeats N         createImageBitmap runs per image (default 5)
+  --chrome PATH              browser binary (default: Chrome Canary, required
+                             for JPEG XL decode -- stable Chrome cannot)
 
   --no-lossless              skip the lossless suite
   --dry-run                  calibrate, print job count and ETA, then stop

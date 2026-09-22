@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util';
 
 import { ResultsStore, hashFileBytes, shortHash } from './cache.js';
 import { HELP, OPTIONS, resolveConfig } from './config.js';
+import { decodeIsStale, findBrowser, measureDecodeTimes } from './decode.js';
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
 import { losslessSuite } from './lossless.js';
@@ -39,6 +40,7 @@ async function main(argv) {
   }
 
   const config = await resolveConfig(values, positionals);
+  const decodeFailures = [];
 
   // 1. Toolchain. Runs every invocation: scores and timings are only
   //    comparable within one toolchain version (plan.md §1).
@@ -156,6 +158,7 @@ async function main(argv) {
     },
     config: serialisableConfig(config),
     tools: health.tools,
+    browser: null,
     versions: health.versions,
     machine: health.machine,
     spawnOverheadMs: spawnOverhead,
@@ -211,7 +214,80 @@ async function main(argv) {
     process.stderr.write('\r\x1b[2K');
   }
 
-  // 7. Lossless suite, with its hard assertions.
+  // 7. Browser decode timing. Serial and uncontended, for the same reason the
+  //    encode phase is: a decode timed on a busy machine is not a timing.
+  let browser = null;
+  if (config.decodeTiming !== false) {
+    browser = await findBrowser(config.chrome);
+    if (!browser) {
+      if (config.decodeTiming === true) {
+        throw new Error(
+          'Decode timing was requested but no browser was found. Install Google Chrome ' +
+            'Canary, or pass --chrome PATH. Canary is needed because stable Chrome cannot ' +
+            'decode JPEG XL.',
+        );
+      }
+      if (!config.quiet) {
+        process.stdout.write(
+          'Decode timing skipped: Chrome Canary not found (pass --chrome PATH to override).\n',
+        );
+      }
+    }
+  }
+
+  if (browser) {
+    const scored = store.jobs.filter(
+      (job) => job.score !== undefined && gridKeys.has(job.key) && job.bitstream,
+    );
+    const stale = config.force
+      ? scored
+      : scored.filter((job) => decodeIsStale(job, browser.version));
+
+    if (!config.quiet) {
+      process.stdout.write(
+        `Decode timing ${stale.length} image(s) in ${browser.version}` +
+          `${stale.length < scored.length ? ` (${scored.length - stale.length} already measured)` : ''}...\n`,
+      );
+    }
+
+    if (stale.length > 0) {
+      const measured = await measureDecodeTimes({
+        binary: browser.path,
+        rootDir: runDir,
+        targets: stale.map((job) => ({ key: job.key, url: job.bitstream })),
+        repeats: config.decodeRepeats,
+        onProgress: (done, total) => {
+          if (!config.quiet && process.stderr.isTTY) {
+            process.stderr.write(`\r\x1b[2KDecoded ${done}/${total}`);
+          }
+        },
+      });
+      if (!config.quiet && process.stderr.isTTY) process.stderr.write('\r\x1b[2K');
+
+      for (const job of stale) {
+        const result = measured.get(job.key);
+        if (!result) continue;
+        if (result.error) {
+          // A decoder that can't read one of our files is worth surfacing, not
+          // silently leaving a gap in the chart.
+          decodeFailures.push(`${job.codec} q${job.quality} ${job.effortLabel}: ${result.error}`);
+          continue;
+        }
+        job.decode = { ...result, browser: browser.version };
+        await store.put(job);
+      }
+    }
+  }
+
+  // Decode timings are only comparable within one browser build, so record it.
+  if (store.data.run) {
+    store.data.run.browser = browser
+      ? { path: browser.path, version: browser.version, repeats: config.decodeRepeats }
+      : null;
+    await store.flush();
+  }
+
+  // 8. Lossless suite, with its hard assertions.
   let losslessRows = store.lossless;
   if (config.lossless) {
     if (!config.quiet) process.stdout.write('Running lossless suite...\n');
@@ -233,7 +309,7 @@ async function main(argv) {
     await store.putLossless(losslessRows);
   }
 
-  // 8. Outputs.
+  // 9. Outputs.
   //
   // Scoped to *this run's grid*, not everything the store has accumulated.
   // Re-running with a narrower `--avif-speed` used to report the previous run's
@@ -265,7 +341,12 @@ async function main(argv) {
   const runData = { ...store.data, jobs: results, lossless: losslessRows ?? [] };
   await writeFile(resultsPath, `${JSON.stringify(runData, null, 2)}\n`);
 
-  const warnings = collectWarnings(results, config);
+  const warnings = [
+    ...collectWarnings(results, config),
+    ...(decodeFailures.length > 0
+      ? [`Browser decode failed for ${decodeFailures.length} image(s): ${decodeFailures.join('; ')}`]
+      : []),
+  ];
   if (warnings.length > 0) {
     process.stdout.write('\nWarnings:\n');
     for (const warning of warnings) process.stdout.write(`  - ${warning}\n`);
@@ -328,6 +409,7 @@ function serialisableConfig(config) {
     maxPixels: config.maxPixels,
     scoreConcurrency: config.scoreConcurrency,
     lossless: config.lossless,
+    decodeRepeats: config.decodeRepeats,
   };
 }
 
