@@ -181,3 +181,76 @@ test('summarise stamps the methodology version', async () => {
   const { DECODE_SCHEMA } = await import('../src/decode.js');
   assert.equal(summarise([1, 2, 3]).schema, DECODE_SCHEMA);
 });
+
+test('dropDecodeFromData removes one browser and leaves the rest', async () => {
+  const { dropDecodeFromData } = await import('../src/decode.js');
+  const measurement = (ms) => ({ schema: DECODE_SCHEMA, meanMs: ms, sdMs: 0.1, runs: 20 });
+  const data = {
+    run: { browsers: { targets: { chrome: {}, firefox: {}, safari: {} } } },
+    jobs: [{ key: 'a', score: 70, decode: { chrome: measurement(1), firefox: measurement(2) } }],
+    lossless: [{ codec: 'jxl', decode: { chrome: measurement(3), safari: measurement(4) } }],
+  };
+
+  const removed = dropDecodeFromData(data, ['chrome']);
+  assert.deepEqual(removed, { chrome: 2 }, 'counts jobs and lossless rows together');
+  assert.deepEqual(Object.keys(data.jobs[0].decode), ['firefox']);
+  assert.deepEqual(Object.keys(data.lossless[0].decode), ['safari']);
+  // Metadata must not advertise a browser whose data is gone.
+  assert.deepEqual(Object.keys(data.run.browsers.targets), ['firefox', 'safari']);
+  assert.equal(data.jobs[0].score, 70, 'scores are untouched');
+});
+
+test('dropDecodeFromData clears the container and metadata when nothing is left', async () => {
+  const { dropDecodeFromData } = await import('../src/decode.js');
+  const data = {
+    run: { browsers: { targets: { chrome: {} } } },
+    jobs: [{ key: 'a', decode: { chrome: { schema: DECODE_SCHEMA, meanMs: 1 } } }],
+  };
+  dropDecodeFromData(data, ['all']);
+  // A row with nothing measured should look like one that never had anything.
+  assert.equal('decode' in data.jobs[0], false);
+  assert.equal(data.run.browsers, null);
+});
+
+test('dropDecodeFromData does not mistake schema-2 leftovers for browsers', async () => {
+  const { dropDecodeFromData } = await import('../src/decode.js');
+  // Regression: merging a schema-3 measurement into a schema-2 row left the old
+  // flat fields as siblings of the browser keys, and "drop all" then reported
+  // browsers called meanMs, sdMs, samplesMs and so on.
+  const data = {
+    jobs: [
+      {
+        key: 'a',
+        decode: {
+          schema: 2,
+          meanMs: 11.58,
+          sdMs: 0.34,
+          runs: 20,
+          samplesMs: [11, 12],
+          browser: 'chrome 156.0.8068.0 canary',
+          firefox: { schema: DECODE_SCHEMA, meanMs: 2, sdMs: 0.1, runs: 20 },
+        },
+      },
+    ],
+  };
+
+  const removed = dropDecodeFromData(data, ['firefox']);
+  assert.deepEqual(removed, { firefox: 1 }, 'only the real browser is counted');
+
+  // Dropping everything also clears the residue out.
+  dropDecodeFromData(data, ['all']);
+  assert.equal('decode' in data.jobs[0], false);
+});
+
+test('cleanDecodeMap keeps measurements and discards leftovers', async () => {
+  const { cleanDecodeMap } = await import('../src/decode.js');
+  const cleaned = cleanDecodeMap({
+    schema: 2,
+    meanMs: 11.58,
+    samplesMs: [1, 2],
+    browser: 'chrome 156',
+    chrome: { schema: 3, meanMs: 1.2 },
+  });
+  assert.deepEqual(Object.keys(cleaned), ['chrome']);
+  assert.deepEqual(cleanDecodeMap(undefined), {});
+});

@@ -96,6 +96,16 @@ granularity against Chrome's 0.1ms, which matters when the fastest decodes are a
 | `firefox` *(default)* | geckodriver | **Nightly required**; sets `image.jxl.enabled` and turns off `privacy.reduceTimerPrecision`, which otherwise clamps the clock to 1ms |
 | `safari` | safaridriver (built in) | needs Develop → *Allow Remote Automation* once, by hand; no headless mode, so a window opens |
 
+To discard stored decode results so the next run re-measures them:
+
+```
+node src/cli.js <image> --drop-decode safari      # or chrome,firefox / all
+```
+
+It edits both `full-results.json` and `results.json`, clears the browser from the run
+metadata, and exits without running anything. Scores, encode timings and bitstreams are
+left alone, so re-running only re-measures decode.
+
 A version-matched chromedriver and a geckodriver are downloaded and cached under
 `~/.cache/image-codec-bench/drivers` if PATH has nothing suitable. Override with
 `--chromedriver` / `--geckodriver` / `--safaridriver`. Decode figures are comparable

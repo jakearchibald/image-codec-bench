@@ -8,7 +8,13 @@ import { parseArgs } from 'node:util';
 import { ResultsStore, hashFileBytes, shortHash } from './cache.js';
 import { HELP, OPTIONS, resolveConfig } from './config.js';
 import { resolveTarget } from './browsers.js';
-import { DECODE_SCHEMA, WARMUP_RUNS, measureDecodeTimes } from './decode.js';
+import {
+  DECODE_SCHEMA,
+  WARMUP_RUNS,
+  cleanDecodeMap,
+  dropDecodeFromData,
+  measureDecodeTimes,
+} from './decode.js';
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
 import { losslessSuite } from './lossless.js';
@@ -43,6 +49,11 @@ async function main(argv) {
   const config = await resolveConfig(values, positionals);
   const decodeFailures = [];
 
+  // A maintenance action, not a run: no toolchain, no encoding, no browser.
+  if (config.dropDecode.length > 0) {
+    return dropDecodeCommand(config);
+  }
+
   // 1. Toolchain. Runs every invocation: scores and timings are only
   //    comparable within one toolchain version (plan.md §1).
   const health = await doctor();
@@ -51,11 +62,7 @@ async function main(argv) {
 
   // 2. Normalise once. Everything downstream reads this file.
   const inputBytes = await readFile(config.input);
-  const stem = path.basename(config.input, path.extname(config.input));
-  const runDir = path.join(
-    config.out,
-    `${stem}-${shortHash(`${hashFileBytes(inputBytes)}:${config.maxPixels}`)}`,
-  );
+  const runDir = await runDirFor(config, inputBytes);
   const assetsDir = path.join(runDir, 'assets');
   const tempDir = path.join(runDir, '.tmp');
   await mkdir(assetsDir, { recursive: true });
@@ -384,7 +391,9 @@ async function main(argv) {
         continue;
       }
       entry.row.decode = {
-        ...(entry.row.decode ?? {}),
+        // Cleaned, not merged blindly: a row measured under schema 2 has flat
+        // fields that would otherwise sit alongside the browser keys forever.
+        ...cleanDecodeMap(entry.row.decode),
         [name]: { ...result, browser: measured.version },
       };
       if (entry.kind === 'job') await store.put(entry.row);
@@ -494,6 +503,79 @@ async function migrateLegacyStore({ resultsPath, fullResultsPath }) {
   } catch {
     // No legacy file, or unreadable: nothing to carry over.
   }
+}
+
+/**
+ * The output directory for an input. Keyed on the image bytes and the downscale
+ * setting, so the same source always lands in the same place.
+ */
+async function runDirFor(config, inputBytes) {
+  const stem = path.basename(config.input, path.extname(config.input));
+  return path.join(
+    config.out,
+    `${stem}-${shortHash(`${hashFileBytes(inputBytes)}:${config.maxPixels}`)}`,
+  );
+}
+
+/**
+ * `--drop-decode`: delete stored decode measurements so the next run
+ * re-measures them.
+ *
+ * Deliberately drops and exits rather than dropping and re-measuring. "Remove
+ * these so they regenerate" and "re-measure them now" are different intents,
+ * and silently doing the second would spend minutes of browser time nobody
+ * asked for.
+ */
+async function dropDecodeCommand(config) {
+  const inputBytes = await readFile(config.input);
+  const runDir = await runDirFor(config, inputBytes);
+
+  const totals = {};
+  let touched = 0;
+
+  // Both files: `full-results.json` is the cache the next run consults, and
+  // `results.json` is what the report is built from. Editing only one leaves
+  // the two disagreeing.
+  for (const name of ['full-results.json', 'results.json']) {
+    const file = path.join(runDir, name);
+    let data;
+    try {
+      data = JSON.parse(await readFile(file, 'utf8'));
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw new Error(`Could not read ${file}: ${error.message}`);
+    }
+
+    const removed = dropDecodeFromData(data, config.dropDecode);
+    if (Object.keys(removed).length === 0) continue;
+
+    await writeFile(file, `${JSON.stringify(data, null, 2)}\n`);
+    touched += 1;
+    for (const [browser, count] of Object.entries(removed)) {
+      totals[browser] = Math.max(totals[browser] ?? 0, count);
+    }
+  }
+
+  if (touched === 0) {
+    process.stdout.write(
+      `No stored decode results to remove in ${runDir}.\n` +
+        `Wanted: ${config.dropDecode.join(', ')}.\n`,
+    );
+    return 0;
+  }
+
+  const summary = Object.entries(totals)
+    .map(([browser, count]) => `${browser} (${count} row${count === 1 ? '' : 's'})`)
+    .join(', ');
+  process.stdout.write(
+    `Removed decode results from ${runDir}:\n  ${summary}\n` +
+      'Scores, encode timings and bitstreams are untouched, so a re-run only ' +
+      're-measures decode:\n' +
+      `  node src/cli.js ${config.input} --decode-browsers ${
+        config.dropDecode.includes('all') ? 'all' : config.dropDecode.join(',')
+      }\n`,
+  );
+  return 0;
 }
 
 function serialisableConfig(config) {

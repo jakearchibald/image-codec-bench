@@ -115,6 +115,29 @@ export const TARGETS = {
  */
 export const DEFAULT_TARGETS = ['firefox'];
 
+/**
+ * Parse `--drop-decode`. Accepts browser names or 'all', which means every
+ * browser present in the stored data rather than only the known targets.
+ */
+export function parseDropTargets(spec) {
+  const names = String(spec)
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter((name) => name.length > 0);
+
+  if (names.length === 0) throw new Error('--drop-decode needs a browser name, or all');
+  if (names.includes('all')) return ['all'];
+
+  for (const name of names) {
+    if (!TARGETS[name]) {
+      throw new Error(
+        `Unknown decode browser '${name}'. Known: ${Object.keys(TARGETS).join(', ')}, all`,
+      );
+    }
+  }
+  return [...new Set(names)];
+}
+
 export function parseTargets(spec) {
   const names = String(spec)
     .split(',')

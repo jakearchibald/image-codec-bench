@@ -74,6 +74,75 @@ export function decodeIsStale(row, browserName, browserVersion) {
   return measured.browser !== browserVersion;
 }
 
+/**
+ * Is this value a decode measurement, as opposed to a leftover field?
+ *
+ * `decode` used to be a single flat measurement (schema 2) before it became a
+ * map keyed by browser (schema 3). Merging a new measurement into an old row
+ * left the flat fields sitting as siblings of the browser keys, so "every key
+ * of decode" is not the same as "every browser measured".
+ */
+function isMeasurement(value) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    (typeof value.meanMs === 'number' || typeof value.bestMs === 'number')
+  );
+}
+
+/**
+ * Keep only per-browser measurements, discarding schema-2 leftovers. Used
+ * before merging a new measurement in, so the old shape doesn't accumulate.
+ */
+export function cleanDecodeMap(decode) {
+  if (!decode) return {};
+  return Object.fromEntries(Object.entries(decode).filter(([, value]) => isMeasurement(value)));
+}
+
+/**
+ * Remove stored decode measurements for `names`, or for every browser present
+ * when `names` includes 'all'. Mutates `data`; returns a count per browser.
+ *
+ * Exists because dropping one browser's results by hand is a fiddly edit: the
+ * measurements are nested per row, they live in two files, and the run metadata
+ * separately lists which browsers were used -- leaving that behind makes the
+ * report advertise data that is gone.
+ */
+export function dropDecodeFromData(data, names) {
+  const wantsAll = names.includes('all');
+  const removed = {};
+
+  for (const row of [...(data.jobs ?? []), ...(data.lossless ?? [])]) {
+    if (!row.decode) continue;
+    for (const [name, value] of Object.entries(row.decode)) {
+      // Only real measurements count as browsers. Without this, schema-2
+      // leftovers get reported as browsers named "meanMs", "sdMs" and so on.
+      if (!isMeasurement(value)) {
+        // Dropping everything is also a chance to clear that residue out.
+        if (wantsAll) delete row.decode[name];
+        continue;
+      }
+      if (!wantsAll && !names.includes(name)) continue;
+      removed[name] = (removed[name] ?? 0) + 1;
+      delete row.decode[name];
+    }
+    // Drop the container once empty, so a row with nothing measured looks the
+    // same as one that never had anything.
+    if (Object.keys(row.decode).length === 0) delete row.decode;
+  }
+
+  const targets = data.run?.browsers?.targets;
+  if (targets) {
+    for (const name of Object.keys(targets)) {
+      if (wantsAll || names.includes(name)) delete targets[name];
+    }
+    if (Object.keys(targets).length === 0) data.run.browsers = null;
+  }
+
+  return removed;
+}
+
 /** Serve `rootDir` read-only on a random localhost port. */
 async function serveDirectory(rootDir) {
   const server = createServer(async (req, res) => {

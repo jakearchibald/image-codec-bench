@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { DEFAULT_TARGETS, parseTargets } from './browsers.js';
+import { DEFAULT_TARGETS, parseDropTargets, parseTargets } from './browsers.js';
 import { avif, jxl } from './codecs/index.js';
 import { parseRange } from './schedule.js';
 
@@ -30,6 +30,7 @@ export const OPTIONS = {
   'max-pixels': { type: 'string' },
   'score-concurrency': { type: 'string' },
   'decode-browsers': { type: 'string' },
+  'drop-decode': { type: 'string' },
   'no-decode-timing': { type: 'boolean' },
   'decode-repeats': { type: 'string' },
   'decode-budget': { type: 'string' },
@@ -205,6 +206,9 @@ export async function resolveConfig(values, positionals) {
       safari: values.safaridriver ?? fileConfig.safaridriver ?? null,
       'safari-preview': null,
     },
+    // Maintenance action rather than part of a run: drop stored decode
+    // measurements so the next run re-measures them.
+    dropDecode: values['drop-decode'] ? parseDropTargets(values['drop-decode']) : [],
     decodeRepeats: Number(pick('decode-repeats', 'decodeRepeats', 20)),
     decodeBudgetMs: parseDuration(pick('decode-budget', 'decodeBudget', '2s')),
 
@@ -298,6 +302,9 @@ Options:
   --decode-browsers LIST     chrome, firefox, safari, safari-preview,
                              all, none (default firefox). Named browsers are
                              required; the default set is best-effort.
+  --drop-decode LIST         delete stored decode results for these browsers
+                             (or 'all') so the next run re-measures them, then
+                             exit without running anything
   --no-decode-timing         skip browser decode timing
   --decode-repeats N         createImageBitmap runs per image (default 20;
                              the mean is reported, warm-up runs discarded)
