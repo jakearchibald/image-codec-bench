@@ -102,14 +102,53 @@ test('effort labels reflect each encoder\'s own scale', () => {
   assert.equal(jxl.effortLabel(9), 'e9');
 });
 
-test('lossless configs use the slowest effort in each default range', () => {
-  assert.equal(avif.losslessConfig().effort, 0);
-  assert.equal(jxl.losslessConfig().effort, 9);
+test('lossless sweeps every configured effort level', () => {
+  // A single point per codec hid the size/encode-time curve entirely.
+  assert.deepEqual(
+    avif.losslessConfigs([0, 3, 6]).map((c) => c.label),
+    ['avifenc --lossless -s 0', 'avifenc --lossless -s 3', 'avifenc --lossless -s 6'],
+  );
+  assert.deepEqual(jxl.losslessConfigs([7, 9]).map((c) => c.effort), [7, 9]);
+  assert.deepEqual(
+    webp.losslessConfigs([0, 9]).map((c) => c.label),
+    ['cwebp -lossless -z 0 -exact', 'cwebp -lossless -z 9 -exact'],
+  );
+  // Each point carries the label used for its series and filename.
+  for (const codec of [avif, jxl, webp]) {
+    for (const point of codec.losslessConfigs([codec.defaults.effort[0]])) {
+      assert.ok(point.effortLabel, `${codec.name} point needs an effortLabel`);
+      assert.equal(point.lossless, true);
+    }
+  }
+});
+
+test('webp carries its own lossless effort axis', () => {
+  // cwebp's -z is a separate flag from avifenc -s and cjxl -e, so it gets its
+  // own option rather than borrowing either range.
+  assert.deepEqual(webp.defaults.effort, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const args = webp.buildEncodeArgs({ input: 'r.png', output: 'o.webp', effort: 4 });
+  assert.equal(args[args.indexOf('-z') + 1], '4');
+  // -exact stays mandatory at every effort level (finding 6).
+  assert.ok(args.includes('-exact'));
+});
+
+test('the default lossless sweep includes each codec\'s slowest effort', () => {
+  // The slowest setting is the interesting end -- the smallest file -- so it
+  // must be in the default range rather than something you have to ask for.
+  assert.ok(avif.losslessConfigs().some((c) => c.effort === 0), 'avifenc -s 0');
+  assert.ok(jxl.losslessConfigs().some((c) => c.effort === 10), 'cjxl -e 10');
+  assert.ok(webp.losslessConfigs().some((c) => c.effort === 9), 'cwebp -z 9');
 });
 
 test('every lossy codec implements the shared interface', () => {
   for (const codec of lossyCodecs) {
-    for (const method of ['buildEncodeArgs', 'buildDecodeArgs', 'fixDecoded', 'checkSupport']) {
+    for (const method of [
+      'buildEncodeArgs',
+      'buildDecodeArgs',
+      'fixDecoded',
+      'checkSupport',
+      'losslessConfigs',
+    ]) {
       assert.equal(typeof codec[method], 'function', `${codec.name} is missing ${method}`);
     }
     assert.equal(typeof codec.encoder, 'string');

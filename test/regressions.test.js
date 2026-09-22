@@ -354,3 +354,22 @@ test('two targets landing on one encode yield a single variant', async () => {
   });
   assert.equal(variants.filter((v) => v.key === 'only').length, 1);
 });
+
+test('lossless decode targets get one key per effort level, not per codec', async () => {
+  // Regression: the decode phase keyed lossless targets as `lossless:${codec}`.
+  // Once the suite swept effort levels, every level of a codec collided on one
+  // key -- a single file was measured and its samples were copied onto the
+  // rest, so three different AVIF files reported identical 20-sample arrays.
+  const rows = [
+    { key: 'k-s0', codec: 'avif', label: 'avifenc --lossless -s 0', bitstream: 'assets/a0.avif' },
+    { key: 'k-s3', codec: 'avif', label: 'avifenc --lossless -s 3', bitstream: 'assets/a3.avif' },
+    { key: 'k-s6', codec: 'avif', label: 'avifenc --lossless -s 6', bitstream: 'assets/a6.avif' },
+    { codec: 'png', label: 'source PNG', isSource: true },
+  ];
+
+  // Mirrors the key derivation in cli.js.
+  const keys = rows.map((row) => row.key ?? `lossless:${row.codec}`);
+  assert.equal(new Set(keys).size, rows.length, 'every row needs a distinct target key');
+  // The source row has no job key of its own and falls back to the codec name.
+  assert.equal(keys.at(-1), 'lossless:png');
+});

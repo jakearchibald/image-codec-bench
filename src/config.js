@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DEFAULT_TARGETS, parseDropTargets, parseTargets } from './browsers.js';
-import { avif, jxl } from './codecs/index.js';
+import { avif, jxl, webp } from './codecs/index.js';
 import { parseRange } from './schedule.js';
 
 export const OPTIONS = {
@@ -21,6 +21,8 @@ export const OPTIONS = {
 
   'jxl-quality': { type: 'string' },
   'jxl-effort': { type: 'string' },
+
+  'webp-effort': { type: 'string' },
 
   codecs: { type: 'string' },
   timing: { type: 'string' },
@@ -180,6 +182,12 @@ export async function resolveConfig(values, positionals) {
       depth: [8],
     },
 
+    // WebP appears in the lossless suite only, so it has an effort axis and
+    // nothing else.
+    webp: {
+      effort: parseRange(pick('webp-effort', 'webpEffort', webp.defaults.effort.join(',')), { integer: true }),
+    },
+
     timing: parseTiming(
       values['no-timing'] ? 'none' : pick('timing', 'timing', 'single,multi'),
     ),
@@ -267,6 +275,9 @@ function validate(config) {
   for (const e of config.jxl.effort) {
     if (e < 1 || e > 10) throw new Error(`cjxl -e out of range: ${e} (expected 1..10)`);
   }
+  for (const z of config.webp.effort) {
+    if (z < 0 || z > 9) throw new Error(`cwebp -z out of range: ${z} (expected 0..9)`);
+  }
 }
 
 export const HELP = `image-codec-bench -- sweep an image through AVIF and JPEG XL,
@@ -288,6 +299,7 @@ Options:
 
   --jxl-quality RANGE        cjxl -q     (default 15:90:5)
   --jxl-effort RANGE         cjxl -e     (default 7-10)
+  --webp-effort RANGE        cwebp -z, lossless only (default 0-9)
 
   --codecs LIST              lossy sweep codecs (default avif,jxl)
   --timing MODES             single,multi,none (default both)

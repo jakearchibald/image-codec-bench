@@ -68,8 +68,14 @@ export function fixDecoded(buffer) {
 }
 
 /** Lossless config for the §7 table: max effort in the default range. */
-export function losslessConfig() {
-  return { effort: 9, lossless: true, label: 'cjxl -d 0 -e 9' };
+/** One lossless point per configured `-e` level. */
+export function losslessConfigs(efforts = defaults.effort) {
+  return efforts.map((effort) => ({
+    effort,
+    effortLabel: effortLabel(effort),
+    lossless: true,
+    label: `cjxl -d 0 -e ${effort}`,
+  }));
 }
 
 export function checkSupport() {

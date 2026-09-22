@@ -402,6 +402,35 @@
       <div class="variant-list" id="variant-list"></div>
 
       <h2>Lossless</h2>
+      <p>
+        Each codec is swept across its effort levels
+        (<code>avifenc -s</code>, <code>cjxl -e</code>, <code>cwebp -z</code>),
+        so these are curves rather than single points.
+      </p>
+
+      <section id="lossless-size-section" hidden>
+        <h3>Chart 4 — lossless size vs encode time</h3>
+        <p>
+          y = file size, x = encode time. <strong>Down and to the left is
+          better.</strong> One line per codec, one point per effort level.
+        </p>
+        <p class="hint" id="lossless-size-note"></p>
+        <div class="controls" id="lossless-size-controls"></div>
+        <div class="chart-wrap"><canvas id="chart-lossless-size"></canvas></div>
+      </section>
+
+      <section id="lossless-decode-section" hidden>
+        <h3>Chart 5 — lossless size vs decode time</h3>
+        <p>
+          y = file size, x = browser decode time. Same axes as Chart&nbsp;4 with
+          decode substituted for encode, so the two read against each other: a
+          codec can win on size and still cost more to get the pixels back.
+        </p>
+        <p class="hint" id="lossless-decode-chart-note"></p>
+        <div class="controls" id="lossless-decode-controls"></div>
+        <div class="chart-wrap"><canvas id="chart-lossless-decode"></canvas></div>
+      </section>
+
       <p class="hint" id="lossless-decode-note" hidden>
         The <strong>Decode</strong> column is browser decode time, measured the same
         way as Chart&nbsp;3. A format can win on lossless size and still cost more
@@ -877,6 +906,203 @@
         syncCharts = () => {
           previousSync();
           refreshDecode();
+        };
+      }
+
+      /* ------------------------------------------- charts 4 & 5: lossless curves */
+      // Lossless rows form one line per codec, ordered by effort. The lossy
+      // series helpers don't apply: these are keyed by codec, not seriesId.
+      const losslessPoints = lossless.filter((row) => !row.skipped && !row.isSource);
+      const losslessCodecs = [...new Set(losslessPoints.map((row) => row.codec))].sort();
+      const losslessSource = lossless.find((row) => row.isSource);
+
+      function losslessDatasets(xPick) {
+        return losslessCodecs.map((codec, i) => ({
+          label: codec.toUpperCase(),
+          data: losslessPoints
+            .filter((row) => row.codec === codec)
+            .map((row) => ({ x: xPick(row), y: row.bytes, row }))
+            .filter((point) => point.x != null)
+            // Ordered along x so the connecting line doesn't zigzag.
+            .sort((a, b) => a.x - b.x),
+          borderColor: PALETTE[i % PALETTE.length],
+          backgroundColor: PALETTE[i % PALETTE.length],
+          borderDash: codec === "jxl" ? [6, 3] : [],
+          showLine: true,
+          pointRadius: 4,
+          pointHoverRadius: 7,
+          borderWidth: 2,
+          tension: 0,
+        }));
+      }
+
+      const losslessOptions = (xTitle) => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "nearest", intersect: false, axis: "xy" },
+        plugins: {
+          legend: { position: "right", labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              title: (items) => items[0].raw.row.label,
+              label: (item) => {
+                const row = item.raw.row;
+                const lines = [`size: ${fmtBytes(row.bytes)}`];
+                for (const mode of run.config.timing) {
+                  const t = row.timings?.[mode];
+                  if (t) lines.push(`encode ${mode}: ${fmtMs(t.bestMs)}`);
+                }
+                for (const [name, m] of Object.entries(row.decode ?? {})) {
+                  if (m?.meanMs != null) lines.push(`decode ${name}: ${fmtMs(m.meanMs)}`);
+                }
+                return lines;
+              },
+            },
+          },
+        },
+        scales: {
+          x: { title: { display: true, text: xTitle }, type: "logarithmic" },
+          y: { title: { display: true, text: "file size (bytes)" }, type: "linear" },
+        },
+      });
+
+      // Chart 4: size vs encode time.
+      if (losslessPoints.length > 0 && run.config.timing.length > 0) {
+        document.getElementById("lossless-size-section").hidden = false;
+        let sizeMode = run.config.timing[0];
+
+        document.getElementById("lossless-size-controls").innerHTML =
+          (run.config.timing.length > 1
+            ? "<span>Threading:</span>" +
+              run.config.timing
+                .map(
+                  (mode, i) =>
+                    `<label class="inline"><input type="radio" name="lossless-size-mode" value="${mode}"${i === 0 ? " checked" : ""}> ` +
+                    `${mode === "single" ? "single thread" : "all cores"}</label>`,
+                )
+                .join("")
+            : "") +
+          '<label class="inline"><input type="checkbox" id="lossless-size-log" checked> log-scale x</label>';
+
+        // Stated rather than drawn: the source PNG has no encode time of ours,
+        // so it cannot honestly be a point on this chart.
+        document.getElementById("lossless-size-note").textContent = losslessSource
+          ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)}.`
+          : "";
+
+        const sizeChart = new Chart(
+          document.getElementById("chart-lossless-size"),
+          {
+            type: "scatter",
+            data: { datasets: losslessDatasets((row) => row.timings?.[sizeMode]?.bestMs) },
+            options: losslessOptions("encode time (ms, best of N)"),
+          },
+        );
+
+        function refreshLosslessSize() {
+          sizeMode =
+            document.querySelector('input[name="lossless-size-mode"]:checked')?.value ??
+            run.config.timing[0];
+          sizeChart.data.datasets = losslessDatasets(
+            (row) => row.timings?.[sizeMode]?.bestMs,
+          );
+          sizeChart.options.scales.x.type = document.getElementById(
+            "lossless-size-log",
+          ).checked
+            ? "logarithmic"
+            : "linear";
+          sizeChart.update();
+        }
+        for (const input of document.querySelectorAll(
+          'input[name="lossless-size-mode"], #lossless-size-log',
+        )) {
+          input.addEventListener("change", refreshLosslessSize);
+        }
+        const previousSizeSync = syncCharts;
+        syncCharts = () => {
+          previousSizeSync();
+          refreshLosslessSize();
+        };
+      }
+
+      // Chart 5: size vs decode time. Deliberately separate from Chart 3 --
+      // that one plots the lossy grid against quality, which shares no axis
+      // with this.
+      const losslessDecodeBrowsers = [
+        ...new Set(
+          losslessPoints.flatMap((row) =>
+            Object.entries(row.decode ?? {})
+              .filter(([, m]) => m?.meanMs != null)
+              .map(([name]) => name),
+          ),
+        ),
+      ].sort();
+
+      if (losslessDecodeBrowsers.length > 0) {
+        document.getElementById("lossless-decode-section").hidden = false;
+        let decodeTarget = losslessDecodeBrowsers[0];
+
+        document.getElementById("lossless-decode-controls").innerHTML =
+          (losslessDecodeBrowsers.length > 1
+            ? "<span>Browser:</span>" +
+              losslessDecodeBrowsers
+                .map(
+                  (name, i) =>
+                    `<label class="inline"><input type="radio" name="lossless-decode-browser" value="${esc(name)}"${i === 0 ? " checked" : ""}> ` +
+                    `${esc(run.browsers?.targets?.[name]?.label ?? name)}</label>`,
+                )
+                .join("")
+            : "") +
+          '<label class="inline"><input type="checkbox" id="lossless-decode-log" checked> log-scale x</label>';
+
+        document.getElementById("lossless-decode-chart-note").textContent =
+          losslessSource?.decode?.[decodeTarget]?.meanMs != null
+            ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)} and decodes in ${fmtMs(losslessSource.decode[decodeTarget].meanMs)}.`
+            : losslessSource
+              ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)}.`
+              : "";
+
+        const losslessDecodeChart = new Chart(
+          document.getElementById("chart-lossless-decode"),
+          {
+            type: "scatter",
+            data: {
+              datasets: losslessDatasets((row) => row.decode?.[decodeTarget]?.meanMs),
+            },
+            options: losslessOptions("decode time (ms, mean)"),
+          },
+        );
+
+        function refreshLosslessDecode() {
+          decodeTarget =
+            document.querySelector('input[name="lossless-decode-browser"]:checked')
+              ?.value ?? losslessDecodeBrowsers[0];
+          losslessDecodeChart.data.datasets = losslessDatasets(
+            (row) => row.decode?.[decodeTarget]?.meanMs,
+          );
+          losslessDecodeChart.options.scales.x.type = document.getElementById(
+            "lossless-decode-log",
+          ).checked
+            ? "logarithmic"
+            : "linear";
+          const sourceDecode = losslessSource?.decode?.[decodeTarget]?.meanMs;
+          document.getElementById("lossless-decode-chart-note").textContent =
+            losslessSource && sourceDecode != null
+              ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)} and decodes in ${fmtMs(sourceDecode)}.`
+              : losslessSource
+                ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)}.`
+                : "";
+          losslessDecodeChart.update();
+        }
+        for (const input of document.querySelectorAll(
+          'input[name="lossless-decode-browser"], #lossless-decode-log',
+        )) {
+          input.addEventListener("change", refreshLosslessDecode);
+        }
+        const previousDecodeSync = syncCharts;
+        syncCharts = () => {
+          previousDecodeSync();
+          refreshLosslessDecode();
         };
       }
 

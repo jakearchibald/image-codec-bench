@@ -365,7 +365,20 @@ in a real browser.
   - Caveat to note in the report: the browser's decode path is not necessarily
     bit-identical to `avifdec`/`djxl` — colour handling for 10-bit AVIF in particular can
     differ — so what's on screen may deviate slightly from what SSIMULACRA2 scored.
-- **Lossless table.** Three codecs at max effort, with sizes and both encode times,
+- **Lossless sweep, not a single point.** Each codec is swept across its effort levels —
+  `avifenc -s` and `cjxl -e` reuse the configured lossy ranges, `cwebp -z` has its own
+  `--webp-effort` (default 0-9) since it is a separate flag. Every point is still asserted
+  bit-exact *and* asserted to score exactly 100.00. A single point per codec hid the whole
+  size/time curve: measured on the test image, `cwebp -z 4` reaches 338,822 bytes in 67ms
+  where `-z 9` reaches 338,794 bytes in 1.88s — 0.008% smaller for 28× the time.
+- **Chart 4 — lossless size vs encode time.** y = file size, x = encode time, one line per
+  codec and one point per effort level. Down and to the left is better. The source PNG is
+  stated in the caption rather than plotted, since it has no encode time of ours.
+- **Chart 5 — lossless size vs decode time.** The same axes with decode substituted for
+  encode, so the two read against each other. Deliberately separate from Chart 3, which
+  plots the lossy grid against quality and shares no axis with this. Has its own browser
+  selector.
+- **Lossless table.** All three codecs, with sizes and both encode times,
   alongside the source PNG for reference:
 
   | Config | Bytes | Multi | Single | SSIMULACRA2 | Bit-exact |

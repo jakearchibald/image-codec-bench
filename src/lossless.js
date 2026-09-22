@@ -106,8 +106,16 @@ export async function losslessSuite({
         continue;
       }
 
-      const settings = codec.losslessConfig();
-      const output = path.join(assetsDir, `lossless-${codec.name}.${codec.extension}`);
+      // One point per configured effort level: lossless size and lossless
+      // encode time trade off against each other, and a single point per codec
+      // hides the whole curve.
+      const points = codec.losslessConfigs(config[codec.name]?.effort);
+
+      for (const settings of points) {
+      const output = path.join(
+        assetsDir,
+        `lossless-${codec.name}-${settings.effortLabel}.${codec.extension}`,
+      );
       const key = jobKey({
         referenceHash,
         codec: codec.name,
@@ -124,7 +132,10 @@ export async function losslessSuite({
       }
 
       const timings = {};
-      const scratch = path.join(tempDir, `lossless-${codec.name}.timing.${codec.extension}`);
+      const scratch = path.join(
+        tempDir,
+        `lossless-${codec.name}-${settings.effortLabel}.timing.${codec.extension}`,
+      );
 
       const encodeTo = (target, threads) =>
         exec(
@@ -189,6 +200,8 @@ export async function losslessSuite({
       rows.push({
         key,
         codec: codec.name,
+        effort: settings.effort ?? null,
+        effortLabel: settings.effortLabel ?? null,
         label: settings.label,
         bytes,
         bpp: (bytes * 8) / (referenceHeader.width * referenceHeader.height),
@@ -199,6 +212,7 @@ export async function losslessSuite({
         skipped: false,
       });
       log(`lossless ${settings.label}: ${bytes} bytes, score ${scored.score.toFixed(2)}, bit-exact`);
+      }
     }
   } finally {
     await rm(referenceRaw, { force: true });
@@ -225,10 +239,15 @@ export async function losslessSuite({
     skipped: false,
   });
 
+  // Grouped by codec and ordered by effort, so each codec reads as a curve.
+  // Sorting purely by size would interleave the codecs and hide that shape.
   rows.sort((a, b) => {
-    if (a.skipped) return 1;
-    if (b.skipped) return -1;
-    return a.bytes - b.bytes;
+    if (a.skipped !== b.skipped) return a.skipped ? 1 : -1;
+    if (a.isSource !== b.isSource) return a.isSource ? 1 : -1;
+    return (
+      String(a.codec).localeCompare(String(b.codec)) ||
+      (a.effort ?? 0) - (b.effort ?? 0)
+    );
   });
 
   return rows;

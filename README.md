@@ -80,8 +80,9 @@ the earlier ones stay in `full-results.json` and are reused rather than re-encod
    With `--no-timing` this phase encodes each job once, all cores, untimed.
 3. **Phase 2 — score, parallel.** Decode at the reference's bit depth, score with
    SSIMULACRA2, delete the decoded PNG immediately (they are megabytes each).
-4. **Lossless suite** for JXL, WebP and AVIF, each asserted bit-exact *and* asserted to
-   score exactly 100.00.
+4. **Lossless sweep** for JXL, WebP and AVIF across effort levels — `avifenc -s` and
+   `cjxl -e` reuse the lossy ranges, `cwebp -z` uses `--webp-effort` (default 0-9). Every
+   point is asserted bit-exact *and* asserted to score exactly 100.00.
 5. **Phase 3 — browser decode timing, serial.** `createImageBitmap` in a real browser,
    driven over classic W3C WebDriver, for the lossy grid and the lossless rows. Mean of up
    to `--decode-repeats` runs after discarded warm-up, with the spread recorded.

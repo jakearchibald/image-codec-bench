@@ -290,7 +290,11 @@ async function main(argv) {
       .map((row) => ({
         kind: 'lossless',
         row,
-        key: `lossless:${row.codec}`,
+        // The row's own job key, not the codec name: the lossless suite sweeps
+        // effort levels, so one key per codec made every level of a codec
+        // collide -- a single file got measured and its samples were copied
+        // onto the rest. The source-PNG row has no job key of its own.
+        key: row.key ?? `lossless:${row.codec}`,
         url: row.bitstream ?? (row.isSource ? store.data.run.reference.path : null),
         label: row.label ?? row.codec,
       }))
@@ -583,6 +587,7 @@ function serialisableConfig(config) {
     codecs: config.codecs,
     avif: config.avif,
     jxl: config.jxl,
+    webp: config.webp,
     timing: config.timing,
     repeats: config.repeats,
     repeatBudgetMs: config.repeatBudgetMs,

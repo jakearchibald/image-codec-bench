@@ -86,8 +86,14 @@ export function fixDecoded(buffer) {
 }
 
 /** Lossless config for the §7 table: max effort. */
-export function losslessConfig() {
-  return { effort: 0, lossless: true, label: 'avifenc --lossless -s 0' };
+/** One lossless point per configured `-s` level. */
+export function losslessConfigs(efforts = defaults.effort) {
+  return efforts.map((effort) => ({
+    effort,
+    effortLabel: effortLabel(effort),
+    lossless: true,
+    label: `avifenc --lossless -s ${effort}`,
+  }));
 }
 
 /** AVIF caps at 12-bit; nothing else to guard for our 8-bit references. */
