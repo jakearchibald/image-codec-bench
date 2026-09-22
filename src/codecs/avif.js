@@ -7,7 +7,7 @@
 //    10-bit AVIF back to 8-bit is also what a browser does for an 8-bit
 //    display pipeline.
 
-import { stripColourChunks } from '../png.js';
+import { stripChunks } from '../png.js';
 
 export const name = 'avif';
 export const extension = 'avif';
@@ -68,11 +68,14 @@ export const encoder = 'avifenc';
 export const decoder = 'avifdec';
 
 /**
- * Post-process the decoded PNG so ssimulacra2 can read it (finding 1).
- * Returns the chunk types removed, for the record.
+ * Post-process a decoded PNG so ssimulacra2 can read it (finding 1).
+ *
+ * Takes and returns a buffer rather than a path: the caller needs to parse the
+ * header out of the same bytes anyway, so doing the surgery in memory saves
+ * re-reading a multi-megabyte PNG twice per job.
  */
-export async function fixDecoded(path) {
-  return stripColourChunks(path);
+export function fixDecoded(buffer) {
+  return stripChunks(buffer);
 }
 
 /** Lossless config for the §7 table: max effort. */

@@ -20,11 +20,20 @@ import { decodeAndScore, fileSize, mapConcurrent } from './score.js';
  */
 export const UNTIMED = 'untimed';
 
-/** Total estimated cost of one job, across whatever modes are configured. */
-function jobWeight(job, config, model) {
-  if (config.timing.length === 0) return model.estimate(job.seriesId, UNTIMED);
-  return config.timing.reduce((sum, m) => sum + model.estimate(job.seriesId, m), 0);
-}
+/**
+ * The threading mode used for the bitstream that actually gets measured.
+ *
+ * aom's output is thread-dependent: `avifenc -j 1` and `-j all` produce
+ * *different files* -- verified at -s 0 as 23,408 vs 22,955 bytes, a 2% gap,
+ * which is the same order as the codec differences this tool exists to
+ * measure. (cjxl is unaffected: identical bytes either way.)
+ *
+ * So the artefact is always encoded in one fixed mode and the timing sweep
+ * encodes to a scratch path. Otherwise whichever timing mode happened to run
+ * last would silently redefine every file size and score, and the whole
+ * rate-distortion curve would depend on --timing.
+ */
+export const CANONICAL_THREADS = 'multi';
 
 /**
  * Encode params for a job, as passed to the codec and hashed into the cache
@@ -44,6 +53,50 @@ export function encodeParams(job) {
   return params;
 }
 
+/**
+ * The cache key for a job. One definition, used by both the planner and the
+ * encode loop -- if those two derived it separately and drifted, resume would
+ * silently stop matching and every run would re-encode from scratch.
+ */
+export function keyForJob({ job, referenceHash, versions }) {
+  return jobKey({
+    referenceHash,
+    codec: job.codec,
+    params: encodeParams(job),
+    // Deliberately NOT keyed on --timing or --repeats: those change what was
+    // measured, not what was encoded, so a config re-run with different timing
+    // settings is the same job with more (or fewer) measurements. Keying on
+    // them would make one config appear as several table rows. This holds only
+    // because the artefact is always encoded with CANONICAL_THREADS --
+    // otherwise --timing really would change the bytes.
+    versions,
+    extra: {},
+  });
+}
+
+/**
+ * Split `jobs` into those already fully measured and those still to do.
+ *
+ * Used for the ETA as well as the skip decision: crediting a cached job's full
+ * estimated weight the instant it is skipped would make the progress rate look
+ * enormous and the first ETA of a resumed run near-zero.
+ */
+export function partitionCached({ jobs, store, referenceHash, versions, config }) {
+  const cachedKeys = new Set();
+  const todo = [];
+  for (const job of jobs) {
+    const key = keyForJob({ job, referenceHash, versions });
+    const cached = store.get(key);
+    const hasWantedTimings = config.timing.every((m) => cached?.timings?.[m]);
+    if (!config.force && cached && cached.score !== undefined && hasWantedTimings) {
+      cachedKeys.add(key);
+    } else {
+      todo.push(job);
+    }
+  }
+  return { cachedKeys, todo };
+}
+
 function bitstreamName(job) {
   const parts = [job.codec, `q${job.quality}`, `e${job.effort}`, `d${job.depth}`];
   if (job.codec === 'avif') parts.push(`yuv${job.yuv}`);
@@ -55,19 +108,48 @@ function bitstreamName(job) {
  * threading mode. Gives a meaningful first ETA and warms the page cache for
  * the reference image (plan.md §5).
  */
-export async function calibrate({ series, config, reference, tempDir, log = () => {} }) {
+export async function calibrate({
+  series,
+  config,
+  reference,
+  tempDir,
+  cachedResults = [],
+  log = () => {},
+}) {
   const model = new CostModel();
-  const calibrationDir = path.join(tempDir, 'calibration');
-  await mkdir(calibrationDir, { recursive: true });
+
+  // Seed from timings already in results.json before spending anything. A
+  // calibration pass costs one encode per series, and for `avif -s 0` at full
+  // resolution that is minutes -- paid on every resume, to re-measure
+  // something the previous run already recorded.
+  const seeded = new Set();
+  for (const result of cachedResults) {
+    if (!result.seriesId || !result.timings) continue;
+    for (const [mode, timing] of Object.entries(result.timings)) {
+      if (typeof timing?.bestMs !== 'number') continue;
+      model.observe(result.seriesId, mode, timing.bestMs);
+      seeded.add(`${result.seriesId}\u0000${mode}`);
+    }
+  }
 
   // With `--timing none` there are no threading modes, but we still need a
   // cost estimate for the ETA, so calibrate a single untimed encode.
   const modes = config.timing.length > 0 ? config.timing : [UNTIMED];
 
-  for (const s of series) {
+  const needed = series.filter((s) => modes.some((m) => !seeded.has(`${s.id}\u0000${m}`)));
+  if (needed.length === 0) {
+    log('calibration skipped: every series already has timings in results.json');
+    return model;
+  }
+
+  const calibrationDir = path.join(tempDir, 'calibration');
+  await mkdir(calibrationDir, { recursive: true });
+
+  for (const s of needed) {
     const codec = getCodec(s.codec);
     const midQuality = s.qualities[Math.floor(s.qualities.length / 2)];
     for (const mode of modes) {
+      if (seeded.has(`${s.id}\u0000${mode}`)) continue;
       const output = path.join(calibrationDir, `cal-${s.id}-${mode}.${codec.extension}`);
       const args = codec.buildEncodeArgs({
         input: reference.path,
@@ -101,11 +183,13 @@ export async function encodePhase({
   referenceHash,
   versions,
   assetsDir,
+  tempDir,
   store,
   model,
   progress,
 }) {
   await mkdir(assetsDir, { recursive: true });
+  await mkdir(tempDir, { recursive: true });
   const pending = [];
   let skipped = 0;
   let reusedBitstreams = 0;
@@ -113,17 +197,7 @@ export async function encodePhase({
   for (const job of jobs) {
     const codec = getCodec(job.codec);
     const params = encodeParams(job);
-    const key = jobKey({
-      referenceHash,
-      codec: job.codec,
-      params,
-      versions,
-      // Deliberately NOT keyed on --timing or --repeats: those change what was
-      // measured, not what was encoded, so a config re-run with different
-      // timing settings is the same job with more (or fewer) measurements.
-      // Keying on them would make one config appear as several table rows.
-      extra: {},
-    });
+    const key = keyForJob({ job, referenceHash, versions });
 
     const cached = store.get(key);
     // Skip only if it is scored *and* already carries every timing mode this
@@ -131,7 +205,9 @@ export async function encodePhase({
     const hasWantedTimings = config.timing.every((m) => cached?.timings?.[m]);
     if (cached && !config.force && cached.score !== undefined && hasWantedTimings) {
       skipped += 1;
-      progress?.complete({ weight: jobWeight(job, config, model) });
+      // Zero weight: this job costs no time, so crediting its estimate would
+      // distort the progress rate and with it the ETA.
+      progress?.complete({ weight: 0, jobs: 1 });
       continue;
     }
 
@@ -144,7 +220,8 @@ export async function encodePhase({
       if (await fileExists(bitstream)) {
         reusedBitstreams += 1;
         pending.push({ job, result: cached, bitstream, codec });
-        progress?.complete({ weight: jobWeight(job, config, model), jobs: 1 });
+        // Already encoded, so no phase-1 time is spent on it either.
+        progress?.complete({ weight: 0, jobs: 1 });
         continue;
       }
     }
@@ -154,55 +231,62 @@ export async function encodePhase({
       ` ${job.depth}bit`;
 
     const timings = {};
+    const scratch = path.join(tempDir, `${bitstreamName(job)}.timing`);
+
+    const encodeTo = (output, threads) =>
+      exec(
+        codec.encoder,
+        codec.buildEncodeArgs({
+          input: reference.path,
+          output,
+          quality: job.quality,
+          effort: job.effort,
+          depth: job.depth,
+          yuv: job.yuv ?? undefined,
+          qalpha: job.qalpha ?? undefined,
+          threads,
+        }),
+      );
+
+    // The canonical encode. This one file is what gets sized and scored, and
+    // it is always CANONICAL_THREADS regardless of --timing (see above).
+    progress?.setCurrent(`${label}  (encode)`);
+    const canonical = await encodeTo(bitstream, CANONICAL_THREADS);
 
     if (config.timing.length === 0) {
-      // Quality-only run: encode exactly once, all cores, and record no
-      // timings. This is the fast path -- a timed run re-encodes the same job
-      // up to `--repeats` times per threading mode just to stabilise a number
-      // nobody asked for here.
-      progress?.setCurrent(`${label}  (untimed)`);
-      const args = codec.buildEncodeArgs({
-        input: reference.path,
-        output: bitstream,
-        quality: job.quality,
-        effort: job.effort,
-        depth: job.depth,
-        yuv: job.yuv ?? undefined,
-        qalpha: job.qalpha ?? undefined,
-        threads: 'multi',
-      });
-      const { ms } = await exec(codec.encoder, args);
-      model.observe(job.seriesId, UNTIMED, ms);
+      // Quality-only run: the canonical encode is the whole job. This is the
+      // fast path -- a timed run re-encodes up to `--repeats` times per mode
+      // just to stabilise a number nobody asked for here.
+      model.observe(job.seriesId, UNTIMED, canonical.ms);
       progress?.complete({ weight: model.estimate(job.seriesId, UNTIMED), jobs: 0 });
     } else {
+      model.observe(job.seriesId, CANONICAL_THREADS, canonical.ms);
+
       for (const mode of config.timing) {
         const samples = [];
         let cumulative = 0;
-        let runsDone = 0;
+
+        // The canonical encode already timed this mode, so count it rather
+        // than paying for a byte-identical encode twice.
+        if (mode === CANONICAL_THREADS) {
+          samples.push(canonical.ms);
+          cumulative = canonical.ms;
+        }
 
         while (
           shouldRepeatAgain({
-            runsDone,
+            runsDone: samples.length,
             cumulativeMs: cumulative,
             repeats: config.repeats,
             budgetMs: config.repeatBudgetMs,
           })
         ) {
-          progress?.setCurrent(`${label}  (${mode}, run ${runsDone + 1}/${config.repeats})`);
-          const args = codec.buildEncodeArgs({
-            input: reference.path,
-            output: bitstream,
-            quality: job.quality,
-            effort: job.effort,
-            depth: job.depth,
-            yuv: job.yuv ?? undefined,
-            qalpha: job.qalpha ?? undefined,
-            threads: mode,
-          });
-          const { ms } = await exec(codec.encoder, args);
+          progress?.setCurrent(`${label}  (${mode}, run ${samples.length + 1}/${config.repeats})`);
+          // Scratch output: a timing run must never be able to replace the
+          // artefact, because for AVIF it would not be the same bytes.
+          const { ms } = await encodeTo(scratch, mode);
           samples.push(ms);
           cumulative += ms;
-          runsDone += 1;
           model.observe(job.seriesId, mode, ms);
         }
 
@@ -214,10 +298,16 @@ export async function encodePhase({
           meanMs: samples.reduce((a, b) => a + b, 0) / samples.length,
           runs: samples.length,
           samplesMs: samples,
+          // Which mode produced the file that was sized and scored. Only this
+          // one's timing pairs with the recorded bytes; the other is a pure
+          // speed measurement of a different (for AVIF) bitstream.
+          canonical: mode === CANONICAL_THREADS,
         };
 
         progress?.complete({ weight: model.estimate(job.seriesId, mode) * samples.length, jobs: 0 });
       }
+
+      await rm(scratch, { force: true });
     }
 
     const bytes = await fileSize(bitstream);

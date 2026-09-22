@@ -12,8 +12,10 @@
 import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { losslessCodecs, webp } from './codecs/index.js';
+import { jobKey } from './cache.js';
+import { losslessCodecs } from './codecs/index.js';
 import { run as exec } from './exec.js';
+import { CANONICAL_THREADS } from './run.js';
 import { assertLosslessScore, decodeAndScore } from './score.js';
 
 /**
@@ -43,19 +45,44 @@ async function isBitExact(referencePixels, decodedPath, tempDir) {
 export async function losslessSuite({
   reference,
   referenceHeader,
+  referenceHash,
+  versions = {},
   config,
   assetsDir,
   tempDir,
   hasWebp = true,
+  cachedRows = [],
+  force = false,
   log = () => {},
 }) {
   await mkdir(assetsDir, { recursive: true });
   await mkdir(tempDir, { recursive: true });
 
-  const referenceRaw = path.join(tempDir, 'reference.rgba');
-  const referencePixels = await rawPixels(reference.path, referenceRaw);
+  const cachedByKey = new Map(
+    (cachedRows ?? []).filter((row) => row.key).map((row) => [row.key, row]),
+  );
+
+  // Reuse before doing any work: `avifenc --lossless -s 0` is the single most
+  // expensive encode in the whole tool (minutes at full resolution), so a
+  // resume that re-ran it would make --force the only sane way to work.
+  const reusable = async (key) => {
+    if (force) return null;
+    const row = cachedByKey.get(key);
+    if (!row || row.skipped) return null;
+    // The row is only usable if its bitstream is still on disk: the report
+    // links it directly, so a stale row would produce a broken image.
+    if (!row.bitstream) return null;
+    try {
+      await stat(path.join(path.dirname(assetsDir), row.bitstream));
+      return row;
+    } catch {
+      return null;
+    }
+  };
 
   const rows = [];
+  let referencePixels = null;
+  const referenceRaw = path.join(tempDir, 'reference.rgba');
 
   try {
     for (const codec of losslessCodecs) {
@@ -81,24 +108,55 @@ export async function losslessSuite({
 
       const settings = codec.losslessConfig();
       const output = path.join(assetsDir, `lossless-${codec.name}.${codec.extension}`);
+      const key = jobKey({
+        referenceHash,
+        codec: codec.name,
+        params: { lossless: true, effort: settings.effort ?? null, label: settings.label },
+        versions,
+        extra: { timing: config.timing },
+      });
 
-      const timings = {};
-      // With `--timing none` we still need the bitstream, just not the clock:
-      // encode once, all cores, and record no timing.
-      const modes = config.timing.length > 0 ? config.timing : [null];
-      for (const mode of modes) {
-        const args = codec.buildEncodeArgs({
-          input: reference.path,
-          output,
-          effort: settings.effort,
-          lossless: true,
-          threads: mode ?? 'multi',
-        });
-        const { ms } = await exec(codec.encoder, args);
-        if (mode) timings[mode] = { bestMs: ms, meanMs: ms, runs: 1 };
+      const cached = await reusable(key);
+      if (cached) {
+        rows.push(cached);
+        log(`lossless ${settings.label}: ${cached.bytes} bytes (cached)`);
+        continue;
       }
 
+      const timings = {};
+      const scratch = path.join(tempDir, `lossless-${codec.name}.timing.${codec.extension}`);
+
+      const encodeTo = (target, threads) =>
+        exec(
+          codec.encoder,
+          codec.buildEncodeArgs({
+            input: reference.path,
+            output: target,
+            effort: settings.effort,
+            lossless: true,
+            threads,
+          }),
+        );
+
+      // Canonical encode, exactly as in the lossy sweep: `avifenc --lossless`
+      // is also thread-dependent (353,489 vs 353,496 bytes measured), so the
+      // timing sweep must not be able to replace the file we report.
+      const canonical = await encodeTo(output, CANONICAL_THREADS);
+      for (const mode of config.timing) {
+        const ms = mode === CANONICAL_THREADS
+          ? canonical.ms
+          : (await encodeTo(scratch, mode)).ms;
+        timings[mode] = { bestMs: ms, meanMs: ms, runs: 1, canonical: mode === CANONICAL_THREADS };
+      }
+      await rm(scratch, { force: true });
+
       const { size: bytes } = await stat(output);
+
+      // Only now is the raw-pixel reference needed, so a fully cached suite
+      // never pays for the magick round-trip.
+      if (referencePixels === null) {
+        referencePixels = await rawPixels(reference.path, referenceRaw);
+      }
 
       const scored = await decodeAndScore({
         codec,
@@ -129,6 +187,7 @@ export async function losslessSuite({
       }
 
       rows.push({
+        key,
         codec: codec.name,
         label: settings.label,
         bytes,

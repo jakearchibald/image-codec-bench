@@ -4,7 +4,7 @@
 // image are several MB each, so a 500-job grid would run to gigabytes. Nothing
 // needs retaining -- the report links the encoded bitstreams directly.
 
-import { readFile, rm, stat } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { run } from './exec.js';
@@ -48,10 +48,15 @@ export async function decodeAndScore({
     });
     const decode = await run(codec.decoder, decodeArgs);
 
-    // Codec-specific fixups (AVIF's cICP strip, finding 1).
-    const strippedChunks = await codec.fixDecoded(decodedPath);
+    // One read, three uses: codec-specific fixups (AVIF's cICP strip, finding
+    // 1), the header assertion, and the write-back. Decoded PNGs run to
+    // several MB each and scoring is the parallel phase, so re-reading the
+    // same file for each step was the hottest avoidable I/O in the run.
+    const raw = await readFile(decodedPath);
+    const { buffer: fixed, removed: strippedChunks } = codec.fixDecoded(raw);
+    if (strippedChunks.length > 0) await writeFile(decodedPath, fixed);
 
-    const decodedHeader = readHeader(await readFile(decodedPath));
+    const decodedHeader = readHeader(fixed);
     assertComparable(referenceHeader, decodedHeader, codec.name);
 
     const { stdout, ms } = await run('ssimulacra2', [reference, decodedPath]);

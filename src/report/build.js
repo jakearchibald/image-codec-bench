@@ -127,12 +127,20 @@ export function buildCaveats({ run, results }) {
             `(~${run.spawnOverheadMs.bestMs.toFixed(1)}–${run.spawnOverheadMs.medianMs.toFixed(1)} ms, ` +
             'measured at startup). It is reported here rather than subtracted, so no number has ' +
             'been silently adjusted.',
+          '<strong>aom\u2019s output depends on thread count.</strong> ' +
+            '<code>avifenc -j 1</code> and <code>-j all</code> produce different bitstreams — ' +
+            'measured at <code>-s 0</code> as 23,408 vs 22,955 bytes, a 2% gap, which is the ' +
+            'same order as the codec differences being measured. Every file sized and scored ' +
+            'here was therefore encoded all-cores; the single-thread column times an encode of ' +
+            'the same settings, but for AVIF not byte-for-byte the same file. cjxl is ' +
+            'unaffected (identical output either way).',
         ]
       : [
           '<strong>No encode times were measured.</strong> This run used ' +
             '<code>--timing none</code>, so each configuration was encoded exactly once and ' +
-            'the cost chart is omitted. The quality numbers are unaffected — encoder output is ' +
-            'deterministic, so a file encoded once is the same file a timed run would produce.',
+            'the cost chart is omitted. The quality numbers are unaffected: the measured file ' +
+            'is always encoded all-cores regardless of timing settings, so it is the same file ' +
+            'a timed run would have sized and scored.',
         ]),
     '<strong><code>avifenc -q</code> and <code>cjxl -q</code> are different scales</strong> and ' +
       'are never compared directly. The quality axis only generates points; every comparison ' +
@@ -202,11 +210,14 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
     jxlProbe: JXL_PROBE,
   };
 
+  const json = JSON.stringify(payload).replaceAll('</script>', '<\\/script>');
+  // Function replacements, not strings: `$&`, `` $` `` and friends are special
+  // in a string replacement, so a filename or path containing one would be
+  // silently rewritten into the output. Guard the `</script>` sequence too, or
+  // a string inside the JSON could terminate the data block early.
   const html = template
-    .replace('__IMAGE_NAME__', escapeHtml(path.basename(data.run.input)))
-    // Guard against a `</script>` sequence inside the JSON terminating the
-    // data block early.
-    .replace('__DATA__', JSON.stringify(payload).replaceAll('</script>', '<\\/script>'));
+    .replace('__IMAGE_NAME__', () => escapeHtml(path.basename(data.run.input)))
+    .replace('__DATA__', () => json);
 
   const outPath = path.join(runDir, 'report.html');
   await writeFile(outPath, html);

@@ -50,8 +50,8 @@ export function buildDecodeArgs({ input, output, referenceDepth = 8 }) {
 }
 
 /** djxl writes a clean PNG -- no chunk surgery needed. */
-export async function fixDecoded() {
-  return [];
+export function fixDecoded(buffer) {
+  return { buffer, removed: [] };
 }
 
 /** Lossless config for the §7 table: max effort in the default range. */

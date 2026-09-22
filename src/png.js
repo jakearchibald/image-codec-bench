@@ -3,7 +3,7 @@
 // list. See plan.md §2 finding 1 -- avifdec writes a cICP chunk that libjxl's
 // PNG reader rejects outright, so stripping it is load-bearing, not cosmetic.
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -92,9 +92,3 @@ export function stripChunks(buffer, types = COLOUR_CHUNKS) {
   return { buffer: Buffer.concat(keep), removed };
 }
 
-/** Strip colour chunks from `path` in place. Returns the chunk types removed. */
-export async function stripColourChunks(path) {
-  const { buffer, removed } = stripChunks(await readFile(path));
-  if (removed.length > 0) await writeFile(path, buffer);
-  return removed;
-}

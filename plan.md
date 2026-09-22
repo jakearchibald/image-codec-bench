@@ -23,7 +23,7 @@ only comparable within one toolchain version.
 
 ## 2. Findings from the spike (these drive the design)
 
-Six things that are easy to get wrong and that I confirmed by running them:
+Seven things that are easy to get wrong and that I confirmed by running them:
 
 1. **`avifdec` output cannot be scored as-is.** `avifdec` writes a `cICP` PNG chunk, and
    libjxl's PNG reader rejects the file: `Could not decode distorted image: a.png`. The
@@ -65,6 +65,16 @@ Six things that are easy to get wrong and that I confirmed by running them:
    values under fully-transparent pixels to compress better, and the round-trip is not
    bit-exact (verified). `-exact` costs +0.16% (363,796 vs 363,210 bytes) and is
    non-negotiable for a table claiming losslessness.
+
+7. **aom's output depends on thread count, so the timing sweep must not own the
+   artefact.** `avifenc -j 1` and `-j all` produce *different bitstreams*: at `-s 0`,
+   23,408 vs 22,955 bytes — a 2% gap, the same order as the codec differences being
+   measured. `avifenc --lossless` differs too (353,489 vs 353,496). cjxl and cwebp are
+   unaffected (byte-identical either way). Consequence: encoding into one path per timing
+   mode makes whichever mode ran last silently define every file size and score, so the
+   rate-distortion curve would depend on `--timing`. The fix is to encode the measured
+   artefact once in a fixed mode (all-cores) and send the timing runs to a scratch path.
+   Found while reviewing the implementation, not while writing this plan.
 
 Measured timings at 0.2MP (512×384) to sanity-check cost:
 
@@ -134,6 +144,11 @@ Timing details:
   visible.
 - Timings include process spawn (~5-15ms). Measured once at startup and reported in the
   report's caveats rather than subtracted, so no numbers are silently adjusted.
+- The **all-cores encode is the canonical one**: it produces the file that gets sized and
+  scored, and it doubles as the first sample of the all-cores timing. Single-thread runs
+  write to a scratch path, so for AVIF the single-thread column times the same *settings*
+  but not byte-for-byte the same *file* (finding 7). Each recorded timing carries a
+  `canonical` flag saying which is which.
 
 ## 4. Configuration
 

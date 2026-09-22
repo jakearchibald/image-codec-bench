@@ -447,6 +447,13 @@ const variants = DATA.variants;
 let current = null;
 let resumeIndex = null;
 let held = false;
+/**
+ * Guards against out-of-order swaps. `show()` awaits decode(), so a fast
+ * space-tap or a rush through the number keys can have an earlier call resolve
+ * *after* a later one and leave the wrong image on screen while the radio says
+ * otherwise -- which would quietly invalidate the very comparison this is for.
+ */
+let showToken = 0;
 
 for (const input of document.querySelectorAll('input[name="backdrop"]')) {
   input.addEventListener('change', (e) => {
@@ -485,12 +492,14 @@ function failureNotice(v) {
 async function show(index) {
   const v = variants[index];
   if (!v) return;
+  const token = ++showToken;
   const img = new Image();
   img.src = v.src;
   img.alt = v.name;
   try {
     await img.decode();
   } catch (error) {
+    if (token !== showToken) return;
     // Do NOT leave the previous variant on screen: someone would then be
     // comparing the selected label against a stale image of a different
     // codec. Clear the stage and say so instead.
@@ -499,6 +508,8 @@ async function show(index) {
     status.textContent = `Could not decode ${v.name} (${v.src.split('/').pop()}) — this browser lacks support.`;
     return;
   }
+  // A newer show() started while this one was decoding; it owns the stage now.
+  if (token !== showToken) return;
   // Half intrinsic size: exactly what a site does serving 2x imagery to a
   // high-DPR display. Width only, so height stays proportional.
   img.width = Math.round(img.naturalWidth / 2);

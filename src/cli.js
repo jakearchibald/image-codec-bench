@@ -5,7 +5,7 @@ import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { ResultsStore, hashFileBytes, jobKey, shortHash } from './cache.js';
+import { ResultsStore, hashFileBytes, shortHash } from './cache.js';
 import { HELP, OPTIONS, resolveConfig } from './config.js';
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
@@ -16,9 +16,9 @@ import { Progress, formatDuration } from './progress.js';
 import { buildReport } from './report/build.js';
 import {
   calibrate,
-  encodeParams,
   encodePhase,
   estimateRuntime,
+  partitionCached,
   planJobs,
   scorePhase,
 } from './run.js';
@@ -31,7 +31,9 @@ async function main(argv) {
     allowPositionals: true,
   });
 
-  if (values.help || positionals.length === 0) {
+  // No image *and* no --config means there is nothing to work from; print
+  // help. A --config file may carry `input`, so don't bail in that case.
+  if (values.help || (positionals.length === 0 && !values.config)) {
     process.stdout.write(HELP);
     return 0;
   }
@@ -82,26 +84,30 @@ async function main(argv) {
   const store = new ResultsStore(path.join(runDir, 'results.json'));
   await store.load({ force: config.force });
 
-  // 4. Calibrate: one encode per series, for a meaningful first ETA.
+  // 4. Calibrate: one encode per series, for a meaningful first ETA. Series
+  //    already timed in results.json are seeded from it rather than re-run.
   if (!config.quiet) process.stdout.write(`Calibrating ${series.length} series...\n`);
-  const model = await calibrate({ series, config, reference, tempDir });
-  const estimate = estimateRuntime({ jobs, config, model });
-
-  const cachedCount = jobs.filter((job) => {
-    const key = jobKey({
-      referenceHash,
-      codec: job.codec,
-      params: encodeParams(job),
-      versions: health.versions,
-      // Deliberately NOT keyed on --timing or --repeats: those change what was
-      // measured, not what was encoded, so a config re-run with different
-      // timing settings is the same job with more (or fewer) measurements.
-      // Keying on them would make one config appear as several table rows.
-      extra: {},
-    });
-    const cached = store.get(key);
-    return cached && cached.score !== undefined;
-  }).length;
+  const model = await calibrate({
+    series,
+    config,
+    reference,
+    tempDir,
+    cachedResults: store.jobs,
+    log: (message) => {
+      if (!config.quiet) process.stdout.write(`  ${message}\n`);
+    },
+  });
+  // Estimate only the work actually left to do, so a resumed run's ETA is
+  // right from the first job rather than starting at zero and climbing.
+  const { cachedKeys, todo } = partitionCached({
+    jobs,
+    store,
+    referenceHash,
+    versions: health.versions,
+    config,
+  });
+  const estimate = estimateRuntime({ jobs: todo, config, model });
+  const cachedCount = cachedKeys.size;
 
   if (!config.quiet) {
     process.stdout.write(
@@ -163,6 +169,7 @@ async function main(argv) {
     referenceHash,
     versions: health.versions,
     assetsDir,
+    tempDir,
     store,
     model,
     progress,
@@ -204,10 +211,14 @@ async function main(argv) {
     losslessRows = await losslessSuite({
       reference,
       referenceHeader,
+      referenceHash,
+      versions: health.versions,
       config,
       assetsDir,
       tempDir,
       hasWebp: hasWebp(health),
+      cachedRows: store.lossless,
+      force: config.force,
       log: (message) => {
         if (!config.quiet) process.stdout.write(`  ${message}\n`);
       },

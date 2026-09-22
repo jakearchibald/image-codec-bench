@@ -46,21 +46,16 @@ export function run(command, args, { allowFailure = false, env } = {}) {
   });
 }
 
-/** True if the binary exists and is executable. */
+/**
+ * True if the binary exists and is executable.
+ *
+ * Note the ENOENT check rather than a bare try/catch: with `allowFailure` set,
+ * `run` *resolves* for a missing binary (ENOENT arrives as an error object,
+ * not a rejection), so catching alone would report every tool as present.
+ */
 export async function exists(command) {
-  try {
-    await run('command', ['-v', command]);
-    return true;
-  } catch {
-    // `command` is a shell builtin, so execFile can't see it. Fall back to
-    // running the tool itself and treating "not found" as the only failure.
-    try {
-      await run(command, ['--version'], { allowFailure: true });
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  const { code } = await run(command, ['--version'], { allowFailure: true });
+  return code !== 'ENOENT';
 }
 
 /**

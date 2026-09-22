@@ -30,8 +30,9 @@ export function buildDecodeArgs({ input, output }) {
   return [input, '-o', output];
 }
 
-export async function fixDecoded() {
-  return [];
+/** dwebp writes a clean PNG -- no chunk surgery needed. */
+export function fixDecoded(buffer) {
+  return { buffer, removed: [] };
 }
 
 export function losslessConfig() {
