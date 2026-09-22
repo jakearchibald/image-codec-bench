@@ -1,0 +1,169 @@
+// The lossless table (plan.md §7): AVIF, JXL and WebP at max effort.
+//
+// Each output is decoded and asserted bit-exact against the reference *and*
+// asserted to score exactly 100.00. Either check failing aborts the run rather
+// than reporting a bogus "lossless" size -- a table claiming losslessness has
+// to earn it.
+//
+// Bit-exactness is compared on *raw pixels*, not PNG file bytes: two PNGs can
+// encode identical pixels with different filtering and compression, so
+// comparing files would produce false failures (verified during the spike).
+
+import { mkdir, readFile, rm, stat } from 'node:fs/promises';
+import path from 'node:path';
+
+import { losslessCodecs, webp } from './codecs/index.js';
+import { run as exec } from './exec.js';
+import { assertLosslessScore, decodeAndScore } from './score.js';
+
+/**
+ * Extract raw RGBA pixels via ImageMagick so codecs with different PNG writers
+ * can still be compared bit-for-bit.
+ */
+async function rawPixels(imagePath, outPath) {
+  await exec('magick', [imagePath, '-depth', '8', `RGBA:${outPath}`]);
+  return readFile(outPath);
+}
+
+/** Compare decoded pixels against the reference's pixels. */
+async function isBitExact(referencePixels, decodedPath, tempDir) {
+  const rawPath = path.join(tempDir, `${path.basename(decodedPath)}.rgba`);
+  try {
+    const pixels = await rawPixels(decodedPath, rawPath);
+    return pixels.equals(referencePixels);
+  } finally {
+    await rm(rawPath, { force: true });
+  }
+}
+
+/**
+ * Run the lossless suite. Returns one row per codec, or a skip entry where the
+ * codec can't handle the image (WebP's 16,383px cap).
+ */
+export async function losslessSuite({
+  reference,
+  referenceHeader,
+  config,
+  assetsDir,
+  tempDir,
+  hasWebp = true,
+  log = () => {},
+}) {
+  await mkdir(assetsDir, { recursive: true });
+  await mkdir(tempDir, { recursive: true });
+
+  const referenceRaw = path.join(tempDir, 'reference.rgba');
+  const referencePixels = await rawPixels(reference.path, referenceRaw);
+
+  const rows = [];
+
+  try {
+    for (const codec of losslessCodecs) {
+      if (codec.name === 'webp' && !hasWebp) {
+        rows.push({
+          codec: codec.name,
+          skipped: true,
+          warning: 'cwebp/dwebp not installed; WebP row omitted.',
+        });
+        continue;
+      }
+
+      const support = codec.checkSupport({
+        width: referenceHeader.width,
+        height: referenceHeader.height,
+      });
+      if (!support.supported) {
+        // Skip with a warning rather than failing the whole grid (plan.md §7).
+        for (const warning of support.warnings) log(warning);
+        rows.push({ codec: codec.name, skipped: true, warning: support.warnings.join(' ') });
+        continue;
+      }
+
+      const settings = codec.losslessConfig();
+      const output = path.join(assetsDir, `lossless-${codec.name}.${codec.extension}`);
+
+      const timings = {};
+      // With `--timing none` we still need the bitstream, just not the clock:
+      // encode once, all cores, and record no timing.
+      const modes = config.timing.length > 0 ? config.timing : [null];
+      for (const mode of modes) {
+        const args = codec.buildEncodeArgs({
+          input: reference.path,
+          output,
+          effort: settings.effort,
+          lossless: true,
+          threads: mode ?? 'multi',
+        });
+        const { ms } = await exec(codec.encoder, args);
+        if (mode) timings[mode] = { bestMs: ms, meanMs: ms, runs: 1 };
+      }
+
+      const { size: bytes } = await stat(output);
+
+      const scored = await decodeAndScore({
+        codec,
+        bitstream: output,
+        reference: reference.path,
+        referenceHeader,
+        workDir: tempDir,
+        keepDecoded: true,
+      });
+
+      let bitExact = false;
+      try {
+        bitExact = await isBitExact(referencePixels, scored.decodedPath, tempDir);
+      } finally {
+        await rm(scored.decodedPath, { force: true });
+      }
+
+      // Both assertions are hard failures: a "lossless" row that isn't
+      // lossless is worse than no row at all.
+      assertLosslessScore(scored.score, settings.label);
+      if (!bitExact) {
+        throw new Error(
+          `${settings.label}: round-trip is not bit-exact against the reference. ` +
+            (codec.name === 'webp'
+              ? 'For WebP this usually means -exact was dropped (plan.md §2 finding 6).'
+              : 'The encode claimed lossless but pixels changed.'),
+        );
+      }
+
+      rows.push({
+        codec: codec.name,
+        label: settings.label,
+        bytes,
+        bpp: (bytes * 8) / (referenceHeader.width * referenceHeader.height),
+        score: scored.score,
+        bitExact,
+        timings,
+        bitstream: path.relative(path.dirname(assetsDir), output),
+        skipped: false,
+      });
+      log(`lossless ${settings.label}: ${bytes} bytes, score ${scored.score.toFixed(2)}, bit-exact`);
+    }
+  } finally {
+    await rm(referenceRaw, { force: true });
+  }
+
+  // The source PNG, for reference -- not a codec result, so no score.
+  const { size: sourceBytes } = await stat(reference.path);
+  rows.push({
+    codec: 'png',
+    label: 'source PNG (normalised reference)',
+    bytes: sourceBytes,
+    bpp: (sourceBytes * 8) / (referenceHeader.width * referenceHeader.height),
+    score: null,
+    bitExact: null,
+    timings: {},
+    isSource: true,
+    skipped: false,
+  });
+
+  rows.sort((a, b) => {
+    if (a.skipped) return 1;
+    if (b.skipped) return -1;
+    return a.bytes - b.bytes;
+  });
+
+  return rows;
+}

@@ -124,6 +124,11 @@ Timing details:
 - Each job is encoded up to `--repeats` times (default 3) but bails early once cumulative
   time for that job exceeds `--repeat-budget` (default 2s), so cheap configs get averaged
   and `-s 0` runs once.
+- **`--timing none` / `--no-timing` skips timing entirely** — each job is encoded exactly
+  once, all cores, with no repeats and no threading sweep. Timing is the expensive part of a
+  run (3 repeats × 2 modes), so this is ~4-8× faster and is the right default when you only
+  want the quality curve. Scores and sizes are unchanged, since encoder output is
+  deterministic. The report drops chart 2 and the timing columns and states why.
 - **Report best-of-N as the primary figure**, with mean also recorded. Benchmark noise is
   one-sided, so the minimum is the cleaner estimate; the mean is kept so the spread is
   visible.
@@ -141,6 +146,7 @@ node src/cli.js photo.png \
   --avif-qalpha match \
   --jxl-quality 15:90:5  --jxl-effort 7-10 \
   --timing single,multi --repeats 3 --repeat-budget 2s \
+  # ...or --no-timing for a fast quality-only run (no encode times) \
   --max-pixels 0 --score-concurrency 8 --lossless --out out/
 ```
 

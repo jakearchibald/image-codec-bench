@@ -1,0 +1,13 @@
+{
+  "name": "image-codec-bench",
+  "version": "1.0.0",
+  "description": "Sweep an image through avifenc and cjxl across quality x effort, score with SSIMULACRA2, emit a table and an HTML report.",
+  "type": "module",
+  "private": true,
+  "bin": { "image-codec-bench": "./src/cli.js" },
+  "scripts": {
+    "bench": "node src/cli.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": { "node": ">=22" }
+}
