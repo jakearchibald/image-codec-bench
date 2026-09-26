@@ -30,6 +30,7 @@ export const OPTIONS = {
   repeats: { type: 'string' },
   'repeat-budget': { type: 'string' },
   'max-pixels': { type: 'string' },
+  sdr: { type: 'string' },
   'score-concurrency': { type: 'string' },
   'decode-browsers': { type: 'string' },
   'drop-decode': { type: 'string' },
@@ -194,6 +195,9 @@ export async function resolveConfig(values, positionals) {
     repeats: Number(pick('repeats', 'repeats', 3)),
     repeatBudgetMs: parseDuration(pick('repeat-budget', 'repeatBudget', '2s')),
     maxPixels: parsePixels(pick('max-pixels', 'maxPixels', 0)),
+    // HDR mode (src/hdr.js): the input is a PQ PNG and this is the SDR
+    // rendition of the same image, used as the AVIF gain map's base.
+    sdr: (values.sdr ?? fileConfig.sdr) ? path.resolve(values.sdr ?? fileConfig.sdr) : null,
     scoreConcurrency: Number(pick('score-concurrency', 'scoreConcurrency', defaultConcurrency())),
 
     // Browser decode timing. The default set is best-effort: a browser that
@@ -308,7 +312,10 @@ Options:
                              want the quality curve.
   --repeats N                max timed runs per job (default 3)
   --repeat-budget DURATION   stop repeating past this cumulative time (default 2s)
-  --max-pixels N             downscale source to fit N pixels (default 0 = off)
+  --max-pixels N             downscale source to fit N pixels (default 0 = off;
+                             not available for HDR input)
+  --sdr FILE                 HDR mode: the input is an HDR (PQ) PNG and FILE is the
+                             SDR rendition, used as the AVIF gain map's base
   --score-concurrency N      parallel scoring jobs (default cores-2, max 8)
 
   --decode-browsers LIST     chrome, firefox, safari, safari-preview,
@@ -345,4 +352,5 @@ Examples:
   node src/cli.js photo.png --no-timing        # quality only, fastest
   node src/cli.js photo.png --avif-speed 4,6 --jxl-effort 7 --timing multi
   node src/cli.js photo.png --max-pixels 2MP --out results/
+  node src/cli.js photo-hdr.png --sdr photo-sdr.png   # HDR: gain-map AVIF vs PQ JXL
 `;

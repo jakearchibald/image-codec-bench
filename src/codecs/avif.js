@@ -7,6 +7,7 @@
 //    10-bit AVIF back to 8-bit is also what a browser does for an 8-bit
 //    display pipeline.
 
+import { tonemapArgs } from '../hdr.js';
 import { stripChunks } from '../png.js';
 
 export const name = 'avif';
@@ -43,7 +44,10 @@ export function buildEncodeArgs({
   qalpha = 'match',
   threads = 'multi',
   lossless = false,
+  hdr = null,
 }) {
+  if (hdr) return buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads, hdr });
+
   const args = [input, output, '--ignore-exif', '--ignore-xmp'];
 
   if (lossless) {
@@ -65,13 +69,51 @@ export function buildEncodeArgs({
   return args;
 }
 
+/**
+ * HDR mode: `avifgainmaputil combine` builds the gain-map AVIF from both PNGs
+ * -- the SDR one as the base, and a gain map computed so that applying it in
+ * full reproduces the HDR one. `-d`/`-y` apply to the base; the gain map is
+ * libavif's default 8-bit 4:4:4 at full resolution.
+ */
+function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads, hdr }) {
+  const { sdr } = hdr;
+  return [
+    'combine', input.sdr, input.hdr, output,
+    // The gain map defaults to q60 whatever -q is, so it tracks -q.
+    '-q', String(quality), '--qgain-map', String(quality),
+    '-y', yuv, '-d', String(depth),
+    '-s', String(effort),
+    '-j', threads === 'single' ? '1' : 'all',
+    // combine wants colour as CICP. --ignore-profile is needed for the SDR
+    // PNG's ICC, but it also drops the HDR PNG's cICP chunk -- without
+    // --cicp-alternate both images read as SDR and the headroom comes out 0.
+    // Matrix 6 is what libavif uses for YUV anyway; --cicp takes all three.
+    '--ignore-profile',
+    '--cicp-base', `${sdr.primaries}/${sdr.transfer}/6`,
+    '--cicp-alternate', `${hdr.primaries}/${hdr.transfer}/0`,
+    '--ignore-exif', '--ignore-xmp',
+  ];
+}
+
 export function buildDecodeArgs({ input, output, referenceDepth = 8 }) {
   // Finding 2: pin the decode to the reference depth. Decoding wider scores
   // *higher* but that gain is a depth-mismatch artefact, not fidelity.
   return ['-d', String(referenceDepth), input, output];
 }
 
+/**
+ * HDR mode: render the gain map in full, to a 16-bit PQ PNG in the HDR PNG's
+ * primaries, for scoring against it. Only 12-bit precision, the tone mapper's
+ * widest -- which costs AVIF points against a 16-bit reference (see the report
+ * caveat in report/build.js).
+ */
+export function hdrDecode({ input, output, hdr }) {
+  return { command: 'avifgainmaputil', args: tonemapArgs({ input, output, hdr }) };
+}
+
 export const encoder = 'avifenc';
+/** HDR mode builds gain-map AVIFs with combine instead. */
+export const hdrEncoder = 'avifgainmaputil';
 export const decoder = 'avifdec';
 
 /**

@@ -4,7 +4,7 @@ Sweeps one image through `avifenc` and `cjxl` across quality × effort, scores e
 with SSIMULACRA2, and emits a console table, CSV, and a self-contained HTML report with
 rate-distortion charts and a visual flicker comparison.
 
-Zero runtime dependencies — just Node 22+ and the codec CLIs.
+Zero runtime dependencies — just Node 22+ and the codec CLIs (plus `cargo` for HDR input).
 
 ## Install
 
@@ -46,18 +46,59 @@ Runs are **resumable**: results are keyed by a hash of (reference bytes, encode 
 tool versions), so re-running skips completed jobs and Ctrl-C is safe at any point. Use
 `--force` to ignore the cache.
 
+### HDR input (an HDR PNG plus an SDR PNG)
+
+An HDR PNG (PQ, stated by a `cICP` chunk or an ICC profile's `cicp` tag, as Photoshop
+writes) switches the run to HDR mode. It needs the SDR rendition of the same image too:
+
+```sh
+node src/cli.js neon-hdr.png --sdr neon-sdr.png --no-timing
+```
+
+- **AVIF** is a gain-map image: the SDR PNG as its base, plus a gain map computed by
+  `avifgainmaputil combine` so that applying it in full reproduces the HDR PNG. The gain
+  map's quality tracks `-q` (its default is 60 whatever `-q` is); it is 8-bit, full
+  resolution. `-d`/`-y` apply to the base.
+- **JXL** encodes the HDR PNG as PQ. Linear-light JXL looked closer to the gain map in
+  Chrome but was wrong in Safari, and much of the difference depended on monitor brightness.
+- **Scoring** compares against the HDR PNG at full precision. AVIF gain maps are rendered
+  in full by libavif's tone mapper (at most 12-bit), JXL by djxl at 16-bit. The SDR
+  rendition is not scored.
+- **The metric** is fast-ssim2's experimental PU21 mode (`compute_ssimulacra2_pu_nits`),
+  via [`tools/hdr-ssim2`](tools/hdr-ssim2), built with `cargo` as needed. These scores are
+  not on the same scale as SDR SSIMULACRA2.
+- **The report's original** is the HDR PNG as given, and what the comparison flips back to.
+
+That 12-bit limit matters because SSIMULACRA2 is extremely steep near 100: changing one
+value by one code in a 16-bit image scores ~96.7, and rounding a 16-bit image to 15-bit
+scores ~89. So an AVIF can't score much above ~89 against the 16-bit reference however
+good it is, and near the top of the range the curves aren't directly comparable. The
+report says so.
+
+Requirements and limits:
+
+- The libavif tools are taken from `~/dev/libavif/build` when present (override with
+  `LIBAVIF_BUILD`), falling back to PATH, all three from the same build.
+- Colour goes into the files as CICP. The HDR PNG must be PQ and the SDR PNG must use the
+  sRGB curve, each in sRGB, Display P3 or BT.2020 primaries; an ICC profile is accepted
+  when it has a `cicp` tag or is recognisably one of those. Anything else is refused
+  rather than approximated.
+- Both PNGs must be the same size, RGB without alpha; the HDR one 16-bit.
+- No lossless suite, and no `--max-pixels`: downscale both PNGs first.
+- Gain-map JPEGs are refused rather than run as SDR; export the two PNGs instead.
+
 ## Output
 
 Written to `out/<image-stem>-<hash8>/`:
 
 | File | Contents |
 |---|---|
-| `reference.png` | the normalised 8-bit sRGB source everything was measured against |
+| `reference.png` | what everything was measured against: the normalised 8-bit sRGB source, or in HDR mode the HDR PNG's pixels with only a `cICP` chunk |
 | `results.json` | this run's grid plus run metadata; what the report is built from |
 | `full-results.json` | every job ever measured against this reference; the resume cache |
 | `results.csv`, `lossless.csv` | the same numbers, flat (including decode times) |
 | `assets/` | one bitstream per job; accumulates, like `full-results.json` |
-| `report-assets/` | only the files `report.html` links; rebuilt each run |
+| `report-assets/` | only the files `report.html` links, including a copy of the input file (the report's "original"); rebuilt each run |
 | `report.html` | charts, visual comparison, lossless table, caveats |
 | `assets/` | the encoded `.avif`/`.jxl`/`.webp` bitstreams the report links |
 

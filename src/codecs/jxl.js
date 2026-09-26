@@ -62,6 +62,15 @@ export function buildDecodeArgs({ input, output, referenceDepth = 8 }) {
   return [input, output, `--bits_per_sample=${referenceDepth}`];
 }
 
+/**
+ * HDR mode: the JXL *is* the HDR rendition, stored as PQ, so a 16-bit decode
+ * gives PQ values directly (djxl keeps the stored colour space and writes a
+ * cICP chunk for it).
+ */
+export function hdrDecode({ input, output }) {
+  return { command: 'djxl', args: [input, output, '--bits_per_sample=16'] };
+}
+
 /** djxl writes a clean PNG -- no chunk surgery needed. */
 export function fixDecoded(buffer) {
   return { buffer, removed: [] };

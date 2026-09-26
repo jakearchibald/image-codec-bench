@@ -17,6 +17,7 @@ import {
 } from './decode.js';
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
+import { SDR_WHITE_NITS, hasGainMap, isHdrPng, prepareHdrReference } from './hdr.js';
 import { losslessSuite } from './lossless.js';
 import { normalise } from './normalise.js';
 import { readHeader } from './png.js';
@@ -54,14 +55,33 @@ async function main(argv) {
     return dropDecodeCommand(config);
   }
 
+  const inputBytes = await readFile(config.input);
+  config.hdr = await hdrMode(config, inputBytes);
+  const sdrBytes = config.hdr ? await readFile(config.sdr) : null;
+  if (config.hdr) {
+    if (config.maxPixels > 0) {
+      throw new Error(
+        '--max-pixels is not available for HDR input: the AVIF gain map is computed from the ' +
+          'two PNGs as given. Downscale both PNGs first.',
+      );
+    }
+    // A lossless gain-map AVIF and a lossless PQ JXL are not the same image
+    // (one is SDR + gain map), so a lossless table would compare nothing.
+    config.lossless = false;
+  }
+
   // 1. Toolchain. Runs every invocation: scores and timings are only
   //    comparable within one toolchain version (plan.md §1).
-  const health = await doctor();
+  const health = await doctor({
+    hdr: config.hdr,
+    log: (message) => {
+      if (!config.quiet) process.stdout.write(`${message}\n`);
+    },
+  });
   if (!config.quiet) process.stdout.write(`${formatDoctor(health)}\n\n`);
   assertToolchain(health);
 
   // 2. Normalise once. Everything downstream reads this file.
-  const inputBytes = await readFile(config.input);
   const runDir = await runDirFor(config, inputBytes);
   const assetsDir = path.join(runDir, 'assets');
   const tempDir = path.join(runDir, '.tmp');
@@ -69,9 +89,27 @@ async function main(argv) {
   await mkdir(tempDir, { recursive: true });
 
   const referencePath = path.join(runDir, 'reference.png');
-  const reference = await normalise(config.input, referencePath, { maxPixels: config.maxPixels });
+  const reference = config.hdr
+    ? await prepareHdrReference({
+        hdrInput: config.input,
+        hdrBytes: inputBytes,
+        sdrInput: config.sdr,
+        sdrBytes,
+        output: referencePath,
+      })
+    : await normalise(config.input, referencePath, { maxPixels: config.maxPixels });
   const referenceHeader = readHeader(await readFile(referencePath));
-  const referenceHash = hashFileBytes(await readFile(referencePath));
+  // In HDR mode the AVIF also encodes the SDR PNG, so it is part of what
+  // identifies a job. The trailing tag is a fixed leftover from when scoring
+  // rounded to 10-bit; it means nothing now, but dropping it would re-key and
+  // re-encode every HDR run made before.
+  const referenceHash = config.hdr
+    ? hashFileBytes(Buffer.concat([
+        await readFile(referencePath),
+        sdrBytes,
+        Buffer.from('score-bits:10'),
+      ]))
+    : hashFileBytes(await readFile(referencePath));
 
   if (!config.quiet) {
     process.stdout.write(
@@ -79,6 +117,18 @@ async function main(argv) {
         `(${reference.megapixels.toFixed(2)} MP), ${reference.depth}-bit, ` +
         `${reference.hasAlpha ? 'RGBA' : 'RGB'}\n`,
     );
+    if (reference.hdr) {
+      const { hdr } = reference;
+      process.stdout.write(
+        `HDR: PQ, ${hdr.primariesName} primaries, peak ${hdr.peakNits.toFixed(0)} nits ` +
+          `(${(2 ** hdr.headroom).toFixed(2)}x SDR white at ${SDR_WHITE_NITS} nits); SDR base ` +
+          `${hdr.sdr.primariesName}, ${hdr.sdr.depth}-bit.\n` +
+          '     AVIF: SDR PNG base + gain map to the HDR PNG (gain map quality = -q).\n' +
+          '     JXL: the HDR PNG as PQ. Scored against the HDR PNG with experimental PU21\n' +
+          '     SSIMULACRA2 (fast-ssim2).\n' +
+          '     Lossless suite skipped: the two lossless files would not be the same image.\n',
+      );
+    }
     if (reference.hasAlpha) {
       process.stdout.write(
         'Note: image has alpha. Transparent pixels are scored free, so absolute\n' +
@@ -163,7 +213,9 @@ async function main(argv) {
       megapixels: reference.megapixels,
       sha256: referenceHash,
       strippedChunks: reference.strippedChunks,
+      resized: reference.resized,
     },
+    hdr: reference.hdr ?? null,
     config: serialisableConfig(config),
     tools: health.tools,
     browsers: null,
@@ -510,14 +562,44 @@ async function migrateLegacyStore({ resultsPath, fullResultsPath }) {
 }
 
 /**
+ * HDR mode: the input is a PQ PNG, and `--sdr` supplies the SDR rendition
+ * that becomes the AVIF gain map's base. Each without the other is an error,
+ * as is a gain-map JPEG, which would otherwise run as SDR and lose its HDR.
+ */
+async function hdrMode(config, inputBytes) {
+  if (hasGainMap(inputBytes)) {
+    throw new Error(
+      'Gain-map JPEGs are not an input format. Export the SDR and HDR renditions as PNGs ' +
+        '(e.g. from Photoshop) and run: node src/cli.js image-hdr.png --sdr image-sdr.png',
+    );
+  }
+  const hdr = isHdrPng(inputBytes);
+  if (hdr && !config.sdr) {
+    throw new Error(
+      `${path.basename(config.input)} is an HDR (PQ) PNG. HDR runs also need the SDR rendition ` +
+        'as the AVIF gain map base: --sdr image-sdr.png',
+    );
+  }
+  if (!hdr && config.sdr) {
+    throw new Error(
+      `--sdr was given, but ${path.basename(config.input)} is not an HDR PNG (no PQ transfer in ` +
+        'its cICP chunk or ICC profile).',
+    );
+  }
+  return hdr;
+}
+
+/**
  * The output directory for an input. Keyed on the image bytes and the downscale
- * setting, so the same source always lands in the same place.
+ * setting, so the same source always lands in the same place. An HDR run is
+ * keyed on the SDR PNG too, since the AVIFs are built from it.
  */
 async function runDirFor(config, inputBytes) {
   const stem = path.basename(config.input, path.extname(config.input));
+  const sdr = config.sdr ? `:sdr:${hashFileBytes(await readFile(config.sdr))}` : '';
   return path.join(
     config.out,
-    `${stem}-${shortHash(`${hashFileBytes(inputBytes)}:${config.maxPixels}`)}`,
+    `${stem}-${shortHash(`${hashFileBytes(inputBytes)}:${config.maxPixels}${sdr}`)}`,
   );
 }
 
@@ -592,6 +674,8 @@ function serialisableConfig(config) {
     repeats: config.repeats,
     repeatBudgetMs: config.repeatBudgetMs,
     maxPixels: config.maxPixels,
+    hdr: config.hdr,
+    sdr: config.sdr,
     scoreConcurrency: config.scoreConcurrency,
     lossless: config.lossless,
     decodeRepeats: config.decodeRepeats,

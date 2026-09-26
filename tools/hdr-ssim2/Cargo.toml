@@ -1,0 +1,13 @@
+[package]
+name = "hdr-ssim2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Score two 16-bit PQ PNGs with fast-ssim2's experimental PU21 (HDR) SSIMULACRA2"
+
+[dependencies]
+fast-ssim2 = { git = "https://github.com/imazen/fast-ssim2", tag = "v0.9.0", features = ["hdr-pu"] }
+png = "0.18"
+
+[profile.release]
+lto = "thin"

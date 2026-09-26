@@ -3,10 +3,12 @@
 // so the versions get recorded into results.json and the report.
 
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { access, constants, readFile } from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 
-import { run } from './exec.js';
+import { run, setToolPath, toolPath } from './exec.js';
+import { LIBAVIF_TOOLS, LOCAL_LIBAVIF_DIR, ensureHdrScorer } from './hdr.js';
 
 // `ssimulacra2` has no version flag -- it prints usage and exits non-zero for
 // any argument. We hash the binary instead so a toolchain change is still
@@ -22,6 +24,12 @@ const TOOLS = [
   { name: 'magick', args: ['-version'], required: true },
 ];
 
+// HDR mode only. hdr-ssim2 has no version flag either, so it is hashed too.
+const HDR_TOOLS = [
+  { name: 'avifgainmaputil', args: ['help'], required: true },
+  { name: 'hdr-ssim2', args: null, required: true },
+];
+
 function firstLine(text) {
   return text.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
 }
@@ -29,12 +37,15 @@ function firstLine(text) {
 /** Pull a semver-ish version out of whatever the tool printed. */
 function parseVersion(name, stdout, stderr) {
   const text = `${stdout}\n${stderr}`;
-  const line = firstLine(text);
   const match = text.match(/(\d+\.\d+\.\d+)/);
-  return { version: match?.[1] ?? null, detail: line };
+  // The line the version came from, not just the first: avifgainmaputil opens
+  // with a description and prints its version (and aom's) at the end.
+  const line = text.split('\n').map((l) => l.trim()).find((l) => match && l.includes(match[1]));
+  return { version: match?.[1] ?? null, detail: line ?? firstLine(text) };
 }
 
 async function locate(name) {
+  if (toolPath(name) !== name) return toolPath(name);
   try {
     const { stdout } = await run('/usr/bin/which', [name]);
     return stdout.trim() || null;
@@ -70,17 +81,43 @@ async function probe(tool) {
   return entry;
 }
 
+async function isExecutable(filePath) {
+  try {
+    await access(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Probe every tool. Returns `{ tools, versions, machine, ok, missing }`.
  * `versions` is the flat map that goes into the cache key.
+ *
+ * In HDR mode the libavif tools come from LOCAL_LIBAVIF_DIR when it has them
+ * (all three from the same build, or the tone mapper and the encoder could
+ * disagree), falling back to PATH.
  */
-export async function doctor() {
-  const tools = await Promise.all(TOOLS.map(probe));
+export async function doctor({ hdr = false, log = () => {} } = {}) {
+  let localLibavif = false;
+  if (hdr) {
+    const local = LIBAVIF_TOOLS.map((name) => path.join(LOCAL_LIBAVIF_DIR, name));
+    if ((await Promise.all(local.map(isExecutable))).every(Boolean)) {
+      LIBAVIF_TOOLS.forEach((name, i) => setToolPath(name, local[i]));
+      localLibavif = true;
+    }
+    setToolPath('hdr-ssim2', await ensureHdrScorer({ log }));
+  }
+
+  const tools = await Promise.all([...TOOLS, ...(hdr ? HDR_TOOLS : [])].map(probe));
   const missing = tools.filter((t) => t.required && !t.present).map((t) => t.name);
   const versions = {};
   for (const tool of tools) {
     if (!tool.present) continue;
-    versions[tool.name] = tool.version ?? tool.binarySha256 ?? 'unknown';
+    // A local libavif build and the system one both report "1.4.2"; only the
+    // full line (which names the aom build) tells them apart.
+    const localBuild = localLibavif && LIBAVIF_TOOLS.includes(tool.name);
+    versions[tool.name] = (localBuild ? tool.detail : tool.version) ?? tool.binarySha256 ?? 'unknown';
   }
   return {
     tools,
@@ -102,13 +139,14 @@ export function formatDoctor(report) {
   const lines = ['Toolchain:'];
   for (const tool of report.tools) {
     if (!tool.present) {
-      lines.push(`  ${tool.name.padEnd(12)} MISSING${tool.required ? ' (required)' : ' (optional)'}`);
+      lines.push(`  ${tool.name.padEnd(15)} MISSING${tool.required ? ' (required)' : ' (optional)'}`);
       continue;
     }
-    lines.push(`  ${tool.name.padEnd(12)} ${tool.version ?? tool.binarySha256 ?? '?'}`);
+    const where = tool.path.startsWith(LOCAL_LIBAVIF_DIR) ? `  (${tool.path})` : '';
+    lines.push(`  ${tool.name.padEnd(15)} ${tool.version ?? tool.binarySha256 ?? '?'}${where}`);
   }
   const m = report.machine;
-  lines.push(`  ${'machine'.padEnd(12)} ${m.cpu}, ${m.cores} logical cores, node ${m.node}`);
+  lines.push(`  ${'machine'.padEnd(15)} ${m.cpu}, ${m.cores} logical cores, node ${m.node}`);
   return lines.join('\n');
 }
 

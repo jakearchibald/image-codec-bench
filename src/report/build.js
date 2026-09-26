@@ -150,8 +150,10 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
   // Only name the axes that actually vary. With several subsampling modes or
   // bit depths in one run, two variants at the same effort and quality would
   // otherwise get identical labels and be indistinguishable in the picker.
-  const varies = (field) => new Set(results.map((r) => r[field])).size > 1;
-  const showDepth = varies('depth');
+  const varies = (field, rows = results) => new Set(rows.map((r) => r[field])).size > 1;
+  // Only across codecs that really have a depth: JXL's placeholder 8 would
+  // otherwise make an 8/10-bit AVIF sweep look like it varied against JXL.
+  const showDepth = varies('depth', results.filter((r) => DEPTH_AXIS_CODECS.includes(r.codec)));
   const showYuv = varies('yuv');
 
   // The slowest configured effort per codec, since that's the quality ceiling.
@@ -187,7 +189,7 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
       if (variants.some((v) => v.key === best.key)) continue;
 
       const settings = [best.effortLabel, `q${best.quality}`];
-      if (showDepth) settings.push(`${best.depth}-bit`);
+      if (showDepth && DEPTH_AXIS_CODECS.includes(codec)) settings.push(`${best.depth}-bit`);
       if (showYuv && best.yuv) settings.push(best.yuv);
 
       variants.push({
@@ -209,8 +211,9 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
 
   // JXL lossless, per the plan's variant list. This is the *reference* the
   // comparison opens on and that space flips back to: it is pixel-identical to
-  // the original, and serving it as .jxl puts it through the same browser
-  // decode path as the lossy variants, so flipping compares like with like.
+  // what was scored (the normalised reference, which may differ from the input
+  // file in profile, orientation or size), and serving it as .jxl puts it
+  // through the same browser decode path as the lossy variants.
   const jxlLossless = lossless.find((row) => row.codec === 'jxl' && !row.skipped);
   if (jxlLossless?.bitstream) {
     variants.push({
@@ -221,8 +224,8 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
       isReference: true,
     });
   } else {
-    // No lossless JXL row (--no-lossless, or it was skipped): the original PNG
-    // has to serve as the reference instead.
+    // No lossless JXL row (--no-lossless, skipped, or HDR mode): the original
+    // input file serves as the reference instead.
     variants[0].isReference = true;
   }
 
@@ -235,8 +238,88 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+/** What the x axis measures: plain SSIMULACRA2, or the PU21 HDR variant. */
+export function metricLabel(run) {
+  return run.hdr ? 'SSIMULACRA2 (PU21 HDR)' : 'SSIMULACRA2';
+}
+
+/** HDR-mode caveats. The comparison is not symmetric, so the report says how. */
+export function hdrCaveats(hdr, { timed = false } = {}) {
+  const primaries = { srgb: 'sRGB', p3: 'Display P3', bt2020: 'BT.2020' };
+  return [
+    ...(timed
+      ? [
+          '<strong>Encode times are not the same kind of work.</strong> The AVIF time includes ' +
+            'computing the gain map from both PNGs (<code>avifgainmaputil combine</code>); cjxl ' +
+            'reads one PNG. Both are what each format really costs to produce, but the AVIF ' +
+            'figure is not a pure encoder speed.',
+        ]
+      : []),
+    '<strong>HDR scores use an experimental metric.</strong> They come from fast-ssim2\u2019s ' +
+      '<code>hdr-pu</code> mode, which swaps SSIMULACRA2\u2019s cube-root nonlinearity for PU21 ' +
+      'and takes absolute luminance. It has been validated on one HDR dataset (UPIQ) and is ' +
+      '<em>not</em> on the same scale as ordinary SSIMULACRA2, so these numbers cannot be read ' +
+      'against SDR runs or the usual quality bands.',
+    '<strong>AVIF scores carry a precision penalty that JXL scores do not.</strong> AVIF gain ' +
+      'maps can only be rendered at 12-bit (libavif\u2019s tone mapper), while JXL decodes at ' +
+      '16-bit, like the reference. SSIMULACRA2 is extremely steep near 100: one value changed by ' +
+      'one code in a 16-bit image scores ~96.7, and rounding a 16-bit image to 15-bit scores ~89. ' +
+      'So an AVIF can\u2019t score much above ~89 however good it is, and near the top of the ' +
+      'range the two curves are not directly comparable.',
+    '<strong>Only the HDR rendition is scored.</strong> AVIF gain maps are rendered in full by ' +
+      'libavif\u2019s tone mapper and compared with the HDR PNG. The SDR rendition, and anything ' +
+      'in between that a display with less headroom would show, is not measured.',
+    '<strong>The two formats are not encoding the same thing.</strong> The AVIF is a gain-map ' +
+      'image: the SDR PNG as its base, plus a gain map libavif computes so that applying it in ' +
+      'full reproduces the HDR PNG, at the same quality as the base (<code>--qgain-map</code> = ' +
+      '<code>-q</code>; the default is 60 whatever <code>-q</code> is), 8-bit, full resolution. ' +
+      'The JXL is the HDR PNG as PQ. That is each format used the way it is meant to be, but on ' +
+      'an SDR display the AVIF shows the SDR PNG while the JXL shows whatever tone mapping the ' +
+      'browser applies.',
+    '<strong>How HDR looks depends on the display.</strong> A gain map scales its boost to the ' +
+      'headroom the display has at that moment; PQ states absolute brightness, which the browser ' +
+      'fits to the display. So the two can look different even where they score the same, and ' +
+      'the difference changes with monitor brightness.',
+    `<strong>Colour is signalled as CICP.</strong> The HDR PNG is PQ in ` +
+      `${primaries[hdr.primariesName] ?? hdr.primariesName} (from its ${hdr.colourSource}); the ` +
+      `SDR PNG is ${primaries[hdr.sdr.primariesName] ?? hdr.sdr.primariesName} with the sRGB ` +
+      `curve (from its ${hdr.sdr.colourSource}). Both go into the files as CICP, so neither ` +
+      'format pays for an ICC profile.',
+    '<strong>Browser decode timings include whatever the browser does with the gain ' +
+      'map</strong> for AVIF, and nothing comparable for JXL, which has none.',
+  ];
+}
+
+/**
+ * The original is always the input file, as given. reference.png is only what
+ * the scorer reads -- a normalised 8-bit sRGB copy, or in HDR mode the HDR PNG
+ * stripped to its pixels and a cICP chunk -- and showing it as "the original"
+ * would hide whatever normalising did (colour profile, orientation, downscale).
+ */
+export function originalVariant(runDir, run) {
+  const name = path.basename(run.input);
+  let detail;
+  if (run.hdr) {
+    detail =
+      'the HDR input, as given — what everything was scored against; ' +
+      `the AVIFs' SDR base is ${path.basename(run.hdr.sdr.input)}`;
+  } else {
+    detail =
+      'the input file — scores are against a normalised 8-bit sRGB copy' +
+      (run.reference.resized
+        ? `, downscaled to ${run.reference.width}×${run.reference.height} (shown here at the same size)`
+        : '');
+  }
+  return {
+    name: `Original (${name})`,
+    detail,
+    src: path.relative(runDir, run.input),
+    codec: path.extname(name).slice(1).toLowerCase() || 'original',
+  };
+}
+
 /** Caveats rendered into the report so the numbers are never read bare (§10). */
-export function buildCaveats({ run, results }) {
+export function buildCaveats({ run, results, lossless = [] }) {
   const hasAlpha = run.reference.hasAlpha;
   const decodeBrowsers = new Set();
   for (const r of results) {
@@ -291,6 +374,8 @@ export function buildCaveats({ run, results }) {
       'happens against measured SSIMULACRA2 on the x-axis.',
   ];
 
+  if (run.hdr) caveats.unshift(...hdrCaveats(run.hdr, { timed: run.config.timing.length > 0 }));
+
   if (hasAlpha) {
     caveats.splice(2, 0,
       '<strong>This image has an alpha channel, which inflates scores.</strong> Fully ' +
@@ -343,7 +428,7 @@ export function buildCaveats({ run, results }) {
     );
   }
 
-  caveats.push(
+  if (lossless.length > 0) caveats.push(
     '<strong>Lossless rows are verified, not asserted by the encoder.</strong> Each is decoded ' +
       'and checked bit-exact against the reference <em>and</em> checked to score exactly ' +
       '100.00. With decode depth matched to the reference, a lossless round-trip must score ' +
@@ -368,6 +453,7 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
     lossless: lossless ?? [],
     referenceRelPath: data.run.reference.path,
   });
+  Object.assign(picked[0], originalVariant(runDir, data.run));
   const { variants, missing } = await collectReportAssets({ runDir, variants: picked });
 
   const reportWarnings = missing.length
@@ -399,7 +485,8 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
     })),
     lossless: lossless ?? [],
     warnings: reportWarnings,
-    caveats: buildCaveats({ run: data.run, results }),
+    caveats: buildCaveats({ run: data.run, results, lossless: lossless ?? [] }),
+    metricLabel: metricLabel(data.run),
     nonGoals: NON_GOALS,
     targets: scoreTargets,
     depthAxisCodecs: DEPTH_AXIS_CODECS,

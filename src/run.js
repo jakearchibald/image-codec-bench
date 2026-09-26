@@ -4,7 +4,7 @@
 // nothing else runs, so no scoring work pollutes the measurement. Phase 2 can
 // then use every core, because nothing there is being timed (plan.md §3).
 
-import { access, mkdir, rm } from 'node:fs/promises';
+import { access, mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { jobKey } from './cache.js';
@@ -49,8 +49,23 @@ export function encodeParams(job) {
   if (job.codec === 'avif') {
     params.yuv = job.yuv;
     params.qalpha = job.qalpha === 'match' ? job.quality : Number(job.qalpha);
+    // Only present in HDR mode, so SDR cache keys are unchanged.
+    if (job.hdr) params.qgainmap = job.quality;
   }
   return params;
+}
+
+/** The encoder binary for a codec: HDR mode may use a different tool. */
+export function encoderFor(codec, reference) {
+  return reference.hdr && codec.hdrEncoder ? codec.hdrEncoder : codec.encoder;
+}
+
+/**
+ * What a codec encodes from. Normally the one normalised reference; in HDR
+ * mode AVIF takes both PNGs (`{ sdr, hdr }`) and JXL the HDR one (src/hdr.js).
+ */
+export function encodeInput(reference, codecName) {
+  return reference.encodeInputs?.[codecName] ?? reference.path;
 }
 
 /**
@@ -103,10 +118,27 @@ export function partitionCached({ jobs, store, referenceHash, versions, config }
   return { cachedKeys, todo, keys };
 }
 
+/**
+ * Depth, for display only, and only where it is a real encoder setting. JXL's
+ * `depth: 8` is a placeholder that keeps the job shape uniform (and is in the
+ * cache key, so it stays); printing it would claim a coded depth JXL doesn't
+ * have -- in HDR mode the file actually declares 16-bit.
+ */
+function depthPart(job, format) {
+  return getCodec(job.codec).hasDepthAxis ? [format(job.depth)] : [];
+}
+
 function bitstreamName(job) {
-  const parts = [job.codec, `q${job.quality}`, `e${job.effort}`, `d${job.depth}`];
+  const parts = [job.codec, `q${job.quality}`, `e${job.effort}`, ...depthPart(job, (d) => `d${d}`)];
   if (job.codec === 'avif') parts.push(`yuv${job.yuv}`);
   return `${parts.join('-')}.${getCodec(job.codec).extension}`;
+}
+
+/** A series as printed. Its id stays as-is: cached rows are grouped by it. */
+function seriesDisplayName(s) {
+  const parts = [s.codec, `e${s.effort}`, ...depthPart(s, (d) => `d${d}`)];
+  if (s.yuv) parts.push(`yuv${s.yuv}`);
+  return parts.join('-');
 }
 
 /**
@@ -158,7 +190,8 @@ export async function calibrate({
       if (seeded.has(`${s.id}\u0000${mode}`)) continue;
       const output = path.join(calibrationDir, `cal-${s.id}-${mode}.${codec.extension}`);
       const args = codec.buildEncodeArgs({
-        input: reference.path,
+        input: encodeInput(reference, s.codec),
+        hdr: reference.hdr ?? null,
         output,
         quality: midQuality,
         effort: s.effort,
@@ -167,9 +200,9 @@ export async function calibrate({
         qalpha: s.qalpha ?? undefined,
         threads: mode,
       });
-      const { ms } = await exec(codec.encoder, args);
+      const { ms } = await exec(encoderFor(codec, reference), args);
       model.seed(s.id, mode, ms);
-      log(`calibrate ${s.id} ${mode}: ${ms.toFixed(0)}ms`);
+      log(`calibrate ${seriesDisplayName(s)} ${mode}: ${ms.toFixed(0)}ms`);
       await rm(output, { force: true });
     }
   }
@@ -206,6 +239,7 @@ export async function encodePhase({
     const key = keyForJob({ job, referenceHash, versions });
 
     const cached = store.get(key);
+    if (cached && !config.force) await renameCachedBitstream({ cached, job, assetsDir, store });
     // Skip only if it is scored *and* already carries every timing mode this
     // run asked for; otherwise fall through and measure what is missing.
     const hasWantedTimings = config.timing.every((m) => cached?.timings?.[m]);
@@ -233,17 +267,22 @@ export async function encodePhase({
     }
 
     const label =
-      `${job.codec} q${job.quality} ${codec.effortLabel?.(job.effort) ?? `e${job.effort}`}` +
-      ` ${job.depth}bit`;
+      [
+        job.codec,
+        `q${job.quality}`,
+        codec.effortLabel?.(job.effort) ?? `e${job.effort}`,
+        ...depthPart(job, (d) => `${d}bit`),
+      ].join(' ');
 
     const timings = {};
     const scratch = path.join(tempDir, `${bitstreamName(job)}.timing`);
 
     const encodeTo = (output, threads) =>
       exec(
-        codec.encoder,
+        encoderFor(codec, reference),
         codec.buildEncodeArgs({
-          input: reference.path,
+          input: encodeInput(reference, job.codec),
+          hdr: reference.hdr ?? null,
           output,
           quality: job.quality,
           effort: job.effort,
@@ -372,6 +411,7 @@ export async function scorePhase({
       referenceHeader,
       workDir: tempDir,
       keepDecoded: config.keepDecoded,
+      hdr: reference.hdr ?? null,
     });
 
     Object.assign(entry.result, {
@@ -387,6 +427,26 @@ export async function scorePhase({
   });
 
   return pending.map((entry) => entry.result);
+}
+
+/**
+ * Bring a cached job's bitstream up to the current naming scheme. JXL files
+ * used to carry a `-d8` for a depth JXL doesn't have; renaming beats making
+ * every existing run re-encode just to change a filename. Leaves things alone
+ * if the old file is gone or the new name is already taken.
+ */
+async function renameCachedBitstream({ cached, job, assetsDir, store }) {
+  if (!cached.bitstream) return;
+  const root = path.dirname(assetsDir);
+  const wanted = path.relative(root, path.join(assetsDir, bitstreamName(job)));
+  if (cached.bitstream === wanted) return;
+  if (await fileExists(path.join(root, wanted))) return;
+  try {
+    await rename(path.join(root, cached.bitstream), path.join(root, wanted));
+  } catch {
+    return;
+  }
+  await store.put({ ...cached, bitstream: wanted });
 }
 
 /** Does the file exist and is it readable? */

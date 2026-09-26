@@ -17,6 +17,18 @@ export class ToolError extends Error {
   }
 }
 
+// Tools resolved somewhere other than PATH (HDR mode's local libavif build).
+// Callers keep using the bare name, so nothing else has to know.
+const toolPaths = new Map();
+
+export function setToolPath(name, filePath) {
+  toolPaths.set(name, filePath);
+}
+
+export function toolPath(name) {
+  return toolPaths.get(name) ?? name;
+}
+
 /**
  * Run a command to completion.
  * Returns `{ stdout, stderr, code, ms }` where `ms` is wall-clock duration.
@@ -26,7 +38,7 @@ export function run(command, args, { allowFailure = false, env } = {}) {
   return new Promise((resolve, reject) => {
     const started = performance.now();
     execFile(
-      command,
+      toolPath(command),
       args,
       { maxBuffer: MAX_BUFFER, env: env ? { ...process.env, ...env } : process.env },
       (error, stdout, stderr) => {

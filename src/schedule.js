@@ -103,6 +103,7 @@ export function buildSeries(config) {
             depth,
             yuv,
             qalpha: codecConfig.qalpha ?? null,
+            hdr: Boolean(config.hdr),
             qualities: bisectionOrder(codecConfig.quality),
           });
         }
@@ -142,6 +143,7 @@ export function interleave(series) {
         depth: s.depth,
         yuv: s.yuv,
         qalpha: s.qalpha,
+        hdr: s.hdr,
         round,
       });
     }

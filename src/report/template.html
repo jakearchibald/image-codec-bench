@@ -491,6 +491,12 @@
        */
       const hasDepthAxis = (codec) => depthAxisCodecs.includes(codec);
 
+      /** The x-axis metric: PU21 SSIMULACRA2 for HDR runs. Older results.json has no label. */
+      const metric = DATA.metricLabel ?? "SSIMULACRA2";
+      const hdrNote = run.hdr
+        ? `, HDR PQ (peak ${Math.round(run.hdr.peakNits)} nits)`
+        : "";
+
       /* ------------------------------------------------------------------ utils */
       const fmtBytes = (b) =>
         b < 1024
@@ -520,15 +526,21 @@
       /* --------------------------------------------------------------- metadata */
       document.getElementById("subtitle").textContent =
         `${run.reference.width}×${run.reference.height} (${run.reference.megapixels.toFixed(2)} MP), ` +
-        `${run.reference.depth}-bit ${run.reference.hasAlpha ? "RGBA" : "RGB"} — ` +
+        `${run.reference.depth}-bit ${run.reference.hasAlpha ? "RGBA" : "RGB"}${hdrNote} — ` +
         `${results.length} measured configurations`;
 
       const metaEntries = [
         ["Source", run.input.split("/").pop()],
         [
           "Reference",
-          `${run.reference.width}×${run.reference.height}, ${run.reference.depth}-bit, ${run.reference.hasAlpha ? "RGBA" : "RGB"}`,
+          `${run.reference.width}×${run.reference.height}, ${run.reference.depth}-bit, ${run.reference.hasAlpha ? "RGBA" : "RGB"}${hdrNote}`,
         ],
+        ...(run.hdr
+          ? [
+              ["HDR scorer", `fast-ssim2 PU21 (hdr-ssim2 ${run.versions["hdr-ssim2"] ?? "—"})`],
+              ["avifgainmaputil", run.versions.avifgainmaputil ?? "—"],
+            ]
+          : []),
         ["Started", new Date(run.startedAt).toLocaleString()],
         ["Machine", `${run.machine.cpu} (${run.machine.cores} logical cores)`],
         ["avifenc / avifdec", run.versions.avifenc ?? "—"],
@@ -646,7 +658,7 @@
         label: (item) => {
           const r = item.raw.row;
           const lines = [
-            `SSIMULACRA2: ${r.score.toFixed(4)}`,
+            `${metric}: ${r.score.toFixed(4)}`,
             `size: ${fmtBytes(r.bytes)} (${r.bpp.toFixed(4)} bpp)`,
             `quality: ${r.codec === "avif" ? "-q" : "-q"} ${r.quality}`,
             `effort: ${r.effortLabel}`,
@@ -693,7 +705,7 @@
           x: {
             title: {
               display: true,
-              text: "SSIMULACRA2 (higher is closer to the original)",
+              text: `${metric} (higher is closer to the original)`,
             },
             type: "linear",
           },
@@ -1117,7 +1129,7 @@
           "yuv",
           "bytes",
           "bpp",
-          "SSIMULACRA2",
+          metric,
           ...modes.flatMap((m) => [`${m} best`, `${m} mean`]),
         ];
         const sorted = [...results].sort(
@@ -1218,8 +1230,13 @@
        * display. Width only, so height stays proportional. Shared by the header
        * preview and the comparison so the two are directly comparable.
        */
+      /**
+       * Half the *reference* width, not the image's own: the original is the
+       * input file, which is larger than every encode when --max-pixels
+       * downscaled the run, and the flip test needs identical geometry.
+       */
       function sizeToHalf(img) {
-        img.width = Math.round(img.naturalWidth / 2);
+        img.width = Math.round(run.reference.width / 2);
       }
       const status = document.getElementById("compare-status");
       const variants = DATA.variants;
@@ -1307,7 +1324,7 @@
         return -1;
       }
 
-      // Default to the lossless reference: it is pixel-identical to the original, so
+      // Default to the lossless reference: it is pixel-identical to what was scored, so
       // it is the honest thing to compare against, and serving it as .jxl means the
       // comparison runs through the same decode path as the lossy variants.
       const referenceIndex = Math.max(
@@ -1440,9 +1457,9 @@
        * Show the image the whole report is about, so a reader knows what they
        * are looking at before any chart.
        *
-       * Uses the lossless reference -- pixel-identical to the original, and
+       * Uses the lossless reference -- pixel-identical to what was scored, and
        * served as .jxl through the same decode path as the variants below --
-       * falling back to the original PNG where JPEG XL cannot be decoded.
+       * falling back to the original input file where JPEG XL cannot be decoded.
        */
       async function renderPreview(jxlOk) {
         const reference = variants.find((v) => v.isReference);
@@ -1467,7 +1484,7 @@
           previewStage.replaceChildren(img);
           document.getElementById("preview-caption").textContent =
             `${run.reference.width}×${run.reference.height}, ` +
-            `${run.reference.depth}-bit ${run.reference.hasAlpha ? "RGBA" : "RGB"} — ` +
+            `${run.reference.depth}-bit ${run.reference.hasAlpha ? "RGBA" : "RGB"}${hdrNote} — ` +
             `${candidate.name}, shown at half size like the comparison below.`;
           return;
         }

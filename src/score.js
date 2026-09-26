@@ -8,6 +8,7 @@ import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { run } from './exec.js';
+import { PRIMARIES_BY_CICP, assertHdrImage, readCicp } from './hdr.js';
 import { readHeader } from './png.js';
 
 /** Parse the float ssimulacra2 prints on stdout. */
@@ -34,7 +35,12 @@ export async function decodeAndScore({
   referenceHeader,
   workDir,
   keepDecoded = false,
+  hdr = null,
 }) {
+  if (hdr) {
+    return decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr });
+  }
+
   const decodedPath = path.join(
     workDir,
     `${path.basename(bitstream, path.extname(bitstream))}.decoded.png`,
@@ -67,6 +73,45 @@ export async function decodeAndScore({
       decodeMs: decode.ms,
       scoreMs: ms,
       strippedChunks,
+      decodedDepth: decodedHeader.depth,
+      decodedChannels: decodedHeader.channels,
+      decodedPath: keepDecoded ? decodedPath : null,
+    };
+  } finally {
+    if (!keepDecoded) await rm(decodedPath, { force: true });
+  }
+}
+
+/**
+ * HDR mode: render the bitstream as 16-bit PQ and score it with fast-ssim2's
+ * PU21 SSIMULACRA2 (tools/hdr-ssim2). No chunk stripping here -- the cICP chunk
+ * is what proves the decode came out as PQ in the right primaries.
+ */
+async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr }) {
+  const decodedPath = path.join(
+    workDir,
+    `${path.basename(bitstream, path.extname(bitstream))}.decoded.png`,
+  );
+
+  try {
+    const { command, args } = codec.hdrDecode({ input: bitstream, output: decodedPath, hdr });
+    const decode = await run(command, args);
+
+    const raw = await readFile(decodedPath);
+    const decodedHeader = readHeader(raw);
+    assertComparable(referenceHeader, decodedHeader, codec.name);
+    assertHdrImage({ header: decodedHeader, cicp: readCicp(raw), hdr, what: `${codec.name} decode` });
+
+    const { stdout, ms } = await run('hdr-ssim2', [
+      reference, decodedPath,
+      '--primaries', PRIMARIES_BY_CICP.get(hdr.primaries),
+    ]);
+
+    return {
+      score: parseScore(stdout),
+      decodeMs: decode.ms,
+      scoreMs: ms,
+      strippedChunks: [],
       decodedDepth: decodedHeader.depth,
       decodedChannels: decodedHeader.channels,
       decodedPath: keepDecoded ? decodedPath : null,
