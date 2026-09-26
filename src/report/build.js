@@ -318,6 +318,22 @@ export function originalVariant(runDir, run) {
   };
 }
 
+/** ColorVideoVDP caveats, when its chart is shown. */
+export function cvvdpCaveats(cvvdp) {
+  return [
+    '<strong>ColorVideoVDP is a second, independent metric.</strong> It comes from the ' +
+      'Cambridge graphics group (gfxdisp), with no connection to either codec, so where it and ' +
+      'SSIMULACRA2 agree the result is more trustworthy than either alone. It scores in JOD ' +
+      '(just-objectionable differences): 10 means no visible difference, and one unit down is a ' +
+      'difference 75% of observers would notice. Its scale is not comparable with ' +
+      'SSIMULACRA2\u2019s.',
+    `<strong>ColorVideoVDP scores assume a specific display:</strong> ${escapeHtml(cvvdp.displayName)}. ` +
+      'Viewing conditions decide how visible artefacts are, so the whole curve depends on this ' +
+      'choice. At this distance fine artefacts are hard to see, which is why scores cluster ' +
+      'close to 10; the differences between curves are still meaningful.',
+  ];
+}
+
 /** Caveats rendered into the report so the numbers are never read bare (§10). */
 export function buildCaveats({ run, results, lossless = [] }) {
   const hasAlpha = run.reference.hasAlpha;
@@ -375,6 +391,7 @@ export function buildCaveats({ run, results, lossless = [] }) {
   ];
 
   if (run.hdr) caveats.unshift(...hdrCaveats(run.hdr, { timed: run.config.timing.length > 0 }));
+  if (run.cvvdp && results.some((r) => r.cvvdp?.jod != null)) caveats.push(...cvvdpCaveats(run.cvvdp));
 
   if (hasAlpha) {
     caveats.splice(2, 0,
@@ -479,6 +496,7 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
       bytes: r.bytes,
       bpp: r.bpp,
       score: r.score,
+      cvvdp: r.cvvdp?.jod ?? null,
       timings: r.timings,
       decode: r.decode ?? null,
       bitstream: r.bitstream,

@@ -46,6 +46,33 @@ Runs are **resumable**: results are keyed by a hash of (reference bytes, encode 
 tool versions), so re-running skips completed jobs and Ctrl-C is safe at any point. Use
 `--force` to ignore the cache.
 
+### Second metric: ColorVideoVDP (`--cvvdp`)
+
+`--cvvdp` also scores every file with [ColorVideoVDP](https://github.com/gfxdisp/ColorVideoVDP),
+from a lab with no connection to either codec (SSIMULACRA2 shares authorship with libjxl).
+The report then has a second rate/distortion chart with JOD on the x axis
+("just-objectionable differences": 10 = no visible difference), and the table and CSV gain
+a `cvvdp` column. It works for SDR and HDR runs.
+
+It is optional because it is a Python + PyTorch install (~1 GB):
+
+```sh
+python3 -m venv tools/cvvdp/.venv
+tools/cvvdp/.venv/bin/pip install -r tools/cvvdp/requirements.txt
+```
+
+- **The display model decides the scores.** SDR runs assume cvvdp's `standard_4k` (30" 4K,
+  200 cd/m², office lighting, 2× display height away); HDR runs `standard_hdr_pq` (1500 cd/m²,
+  10 lux). At that distance fine artefacts are hard to see, so scores cluster near 10.
+- cvvdp ignores the files' colour tags and reads pixels in the display's colour space, so
+  each run writes its own display definition matching the reference (e.g. P3 PQ).
+- It runs one file at a time, about 5 seconds each at 5 MP, alongside the normal scoring.
+- Its version and display model are stored with each score, not put in the cache key:
+  turning `--cvvdp` on, upgrading it, or changing display only re-scores, never
+  re-encodes. Runs without `--cvvdp` keep stored JODs but don't show them.
+- Unlike SSIMULACRA2 it has no cliff just below a perfect score: a lossless gain-map AVIF,
+  rendered at 12-bit against a 16-bit reference, scores exactly 10.
+
 ### HDR input (an HDR PNG plus an SDR PNG)
 
 An HDR PNG (PQ, stated by a `cICP` chunk or an ICC profile's `cicp` tag, as Photoshop

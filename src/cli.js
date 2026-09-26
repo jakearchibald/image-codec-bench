@@ -17,6 +17,7 @@ import {
 } from './decode.js';
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
+import { INSTALL_HINT, prepareCvvdp, probeCvvdp, toTiff } from './cvvdp.js';
 import { SDR_WHITE_NITS, hasGainMap, isHdrPng, prepareHdrReference } from './hdr.js';
 import { losslessSuite } from './lossless.js';
 import { normalise } from './normalise.js';
@@ -78,8 +79,20 @@ async function main(argv) {
       if (!config.quiet) process.stdout.write(`${message}\n`);
     },
   });
-  if (!config.quiet) process.stdout.write(`${formatDoctor(health)}\n\n`);
+  // Probed separately from the toolchain: its version must not go into the
+  // cache key, or turning --cvvdp on would re-encode everything.
+  const cvvdpProbe = config.useCvvdp ? await probeCvvdp() : null;
+  if (!config.quiet) {
+    process.stdout.write(formatDoctor(health));
+    if (cvvdpProbe) {
+      process.stdout.write(`\n  ${'cvvdp'.padEnd(15)} ${cvvdpProbe.present ? cvvdpProbe.version : 'MISSING (--cvvdp)'}`);
+    }
+    process.stdout.write('\n\n');
+  }
   assertToolchain(health);
+  if (cvvdpProbe && !cvvdpProbe.present) {
+    throw new Error(`--cvvdp needs ColorVideoVDP (${cvvdpProbe.reason}). ${INSTALL_HINT}`);
+  }
 
   // 2. Normalise once. Everything downstream reads this file.
   const runDir = await runDirFor(config, inputBytes);
@@ -99,6 +112,14 @@ async function main(argv) {
       })
     : await normalise(config.input, referencePath, { maxPixels: config.maxPixels });
   const referenceHeader = readHeader(await readFile(referencePath));
+  if (cvvdpProbe) {
+    const referenceTiff = path.join(tempDir, 'reference.tif');
+    await toTiff(referencePath, referenceTiff);
+    config.cvvdp = {
+      ...(await prepareCvvdp({ probe: cvvdpProbe, hdr: reference.hdr, dir: tempDir })),
+      referenceTiff,
+    };
+  }
   // In HDR mode the AVIF also encodes the SDR PNG, so it is part of what
   // identifies a job. The trailing tag is a fixed leftover from when scoring
   // rounded to 10-bit; it means nothing now, but dropping it would re-key and
@@ -216,6 +237,9 @@ async function main(argv) {
       resized: reference.resized,
     },
     hdr: reference.hdr ?? null,
+    cvvdp: config.cvvdp
+      ? { version: config.cvvdp.version, display: config.cvvdp.display, displayName: config.cvvdp.displayName }
+      : null,
     config: serialisableConfig(config),
     tools: health.tools,
     browsers: null,
@@ -253,7 +277,10 @@ async function main(argv) {
 
   // 6. Phase 2: parallel decode + score.
   if (pending.length > 0 && !config.quiet) {
-    process.stdout.write(`Scoring ${pending.length} job(s) across ${config.scoreConcurrency} workers...\n`);
+    process.stdout.write(
+      `Scoring ${pending.length} job(s) across ${config.scoreConcurrency} workers` +
+        `${config.cvvdp ? ' (ColorVideoVDP one at a time, ~5s each)' : ''}...\n`,
+    );
   }
   let scoredCount = 0;
   await scorePhase({
@@ -477,9 +504,17 @@ async function main(argv) {
   // Scoped to *this run's grid*, not everything the store has accumulated.
   // Re-running with a narrower `--avif-speed` used to report the previous run's
   // series too, which quietly changed what the table and charts were about.
-  const results = store.jobs.filter(
-    (job) => job.score !== undefined && gridKeys.has(job.key),
-  );
+  //
+  // ColorVideoVDP scores only appear in runs made with --cvvdp: they stay in
+  // full-results.json either way, but shown without --cvvdp they would lack the
+  // display model and caveats that say what they mean.
+  const results = store.jobs
+    .filter((job) => job.score !== undefined && gridKeys.has(job.key))
+    .map((job) => {
+      if (config.cvvdp || job.cvvdp === undefined) return job;
+      const { cvvdp, ...rest } = job;
+      return rest;
+    });
   const orphaned = store.jobs.filter(
     (job) => job.score !== undefined && !gridKeys.has(job.key),
   ).length;
@@ -676,6 +711,7 @@ function serialisableConfig(config) {
     maxPixels: config.maxPixels,
     hdr: config.hdr,
     sdr: config.sdr,
+    cvvdp: config.useCvvdp,
     scoreConcurrency: config.scoreConcurrency,
     lossless: config.lossless,
     decodeRepeats: config.decodeRepeats,

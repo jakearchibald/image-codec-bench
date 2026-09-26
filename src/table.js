@@ -29,6 +29,16 @@ const COLUMNS = [
   { key: 'bytes', header: 'bytes', align: 'right', format: (v) => v.toLocaleString('en-US') },
   { key: 'bpp', header: 'bpp', align: 'right', format: (v) => v.toFixed(3) },
   { key: 'score', header: 'ssimu2', align: 'right', format: (v) => (v == null ? '--' : v.toFixed(3)) },
+  // Only shown when some row has it (see activeColumns). JOD differences that
+  // matter are small, so four places rather than three.
+  {
+    key: 'cvvdp.jod',
+    header: 'cvvdp',
+    align: 'right',
+    format: (v) => (v == null ? '--' : v.toFixed(4)),
+    csvHeader: 'cvvdp_jod',
+    optional: true,
+  },
   {
     key: 'timings.single.bestMs',
     header: 'single best',
@@ -95,6 +105,7 @@ function get(object, dottedKey) {
  */
 function activeColumns(timingModes, results = []) {
   const base = COLUMNS.filter((column) => {
+    if (column.optional) return results.some((row) => get(row, column.key) != null);
     if (!column.key.startsWith('timings.')) return true;
     const mode = column.key.split('.')[1];
     return timingModes.includes(mode);

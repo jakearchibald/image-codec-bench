@@ -1,0 +1,4 @@
+# ColorVideoVDP for --cvvdp. See src/cvvdp.js.
+cvvdp==0.5.7
+# cvvdp reads PNG only through an x86-only FreeImage build, so images go in as TIFF.
+tifffile==2026.9.20

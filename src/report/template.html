@@ -325,7 +325,7 @@
         <dl class="meta-grid" id="meta"></dl>
       </div>
 
-      <h2>Chart 1 — rate / distortion</h2>
+      <h2>Chart 1 — rate / distortion<span id="rd-metric-note"></span></h2>
       <p>
         x = SSIMULACRA2, y = file size.
         <strong>Lower file size for a given SSIMULACRA2 is better.</strong> One
@@ -337,6 +337,21 @@
         >
       </div>
       <div class="chart-wrap"><canvas id="chart-rd"></canvas></div>
+
+      <section id="rd-cvvdp-section" hidden>
+        <h2>Chart 1b — rate / distortion (ColorVideoVDP)</h2>
+        <p>
+          x = ColorVideoVDP in JOD, y = file size. Same series as above.
+          <strong>Lower file size for a given JOD is better.</strong>
+        </p>
+        <p class="hint" id="cvvdp-display"></p>
+        <div class="controls">
+          <label class="inline"
+            ><input type="checkbox" id="rd-cvvdp-log" /> log-scale y</label
+          >
+        </div>
+        <div class="chart-wrap"><canvas id="chart-rd-cvvdp"></canvas></div>
+      </section>
 
       <section id="cost-section">
         <h2>Chart 2 — encode cost</h2>
@@ -659,6 +674,7 @@
           const r = item.raw.row;
           const lines = [
             `${metric}: ${r.score.toFixed(4)}`,
+            ...(r.cvvdp != null ? [`ColorVideoVDP: ${r.cvvdp.toFixed(4)} JOD`] : []),
             `size: ${fmtBytes(r.bytes)} (${r.bpp.toFixed(4)} bpp)`,
             `quality: ${r.codec === "avif" ? "-q" : "-q"} ${r.quality}`,
             `effort: ${r.effortLabel}`,
@@ -690,7 +706,7 @@
         },
       };
 
-      const baseOptions = () => ({
+      const baseOptions = (xTitle = `${metric} (higher is closer to the original)`) => ({
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: "nearest", intersect: false, axis: "xy" },
@@ -703,23 +719,20 @@
         },
         scales: {
           x: {
-            title: {
-              display: true,
-              text: `${metric} (higher is closer to the original)`,
-            },
+            title: { display: true, text: xTitle },
             type: "linear",
           },
         },
       });
 
-      function datasetsFor(yPick) {
+      function datasetsFor(yPick, xPick = (r) => r.score) {
         return seriesIds.map((id) => ({
           label: seriesLabel(id),
           seriesId: id,
           data: bySeries
             .get(id)
-            .map((r) => ({ x: r.score, y: yPick(r), row: r }))
-            .filter((p) => p.y != null),
+            .map((r) => ({ x: xPick(r), y: yPick(r), row: r }))
+            .filter((p) => p.x != null && p.y != null),
           borderColor: colourOf.get(id),
           backgroundColor: colourOf.get(id),
           borderDash: dashOf(id),
@@ -749,12 +762,49 @@
         },
       });
 
-      function refreshRd() {
-        const log = document.getElementById("rd-log").checked;
-        rdChart.options.scales.y.type = log ? "logarithmic" : "linear";
-        rdChart.update();
+      /* ------------------------------ chart 1b: rate/distortion, ColorVideoVDP */
+      // Only when the run scored with --cvvdp. Same series and y axis as chart 1,
+      // so the two metrics can be read against each other.
+      const hasCvvdp = results.some((r) => r.cvvdp != null);
+      let rdCvvdpChart = null;
+      if (hasCvvdp) {
+        document.getElementById("rd-cvvdp-section").hidden = false;
+        document.getElementById("rd-metric-note").textContent = ` (${metric})`;
+        document.getElementById("cvvdp-display").textContent =
+          `Display assumed: ${run.cvvdp?.displayName ?? "unknown"}. ` +
+          `ColorVideoVDP ${run.cvvdp?.version ?? ""}.`;
+        rdCvvdpChart = new Chart(document.getElementById("chart-rd-cvvdp"), {
+          type: "scatter",
+          data: { datasets: datasetsFor((r) => r.bytes, (r) => r.cvvdp) },
+          options: {
+            ...baseOptions("ColorVideoVDP, JOD (10 = no visible difference)"),
+            scales: {
+              ...baseOptions("ColorVideoVDP, JOD (10 = no visible difference)").scales,
+              y: {
+                title: { display: true, text: "file size (bytes)" },
+                type: "linear",
+              },
+            },
+          },
+        });
       }
-      document.getElementById("rd-log").addEventListener("change", refreshRd);
+
+      /** Wire a "log-scale y" checkbox to a chart. */
+      function logToggle(checkboxId, chart) {
+        const checkbox = document.getElementById(checkboxId);
+        const refresh = () => {
+          chart.options.scales.y.type = checkbox.checked ? "logarithmic" : "linear";
+          chart.update();
+        };
+        checkbox.addEventListener("change", refresh);
+        return refresh;
+      }
+      // Re-applied by syncFormState, since browsers restore checkbox state
+      // without firing `change`.
+      const logScaleRefreshers = [
+        logToggle("rd-log", rdChart),
+        ...(rdCvvdpChart ? [logToggle("rd-cvvdp-log", rdCvvdpChart)] : []),
+      ];
 
       /* ------------------------------------------------------ chart 2: encode cost */
       /** Set by the cost chart once built, so syncFormState can refresh it. */
@@ -1130,6 +1180,7 @@
           "bytes",
           "bpp",
           metric,
+          ...(hasCvvdp ? ["ColorVideoVDP (JOD)"] : []),
           ...modes.flatMap((m) => [`${m} best`, `${m} mean`]),
         ];
         const sorted = [...results].sort(
@@ -1148,6 +1199,7 @@
           r.bytes.toLocaleString(),
           r.bpp.toFixed(4),
           r.score.toFixed(4),
+          ...(hasCvvdp ? [r.cvvdp == null ? "—" : r.cvvdp.toFixed(4)] : []),
           ...modes.flatMap((m) => [
             fmtMs(r.timings[m]?.bestMs),
             fmtMs(r.timings[m]?.meanMs),
@@ -1287,7 +1339,7 @@
       async function syncFormState() {
         syncBackdrop();
         syncCharts();
-        refreshRd();
+        for (const refresh of logScaleRefreshers) refresh();
 
         let index = Number(
           document.querySelector('input[name="variant"]:checked')?.value ??

@@ -31,6 +31,7 @@ export const OPTIONS = {
   'repeat-budget': { type: 'string' },
   'max-pixels': { type: 'string' },
   sdr: { type: 'string' },
+  cvvdp: { type: 'boolean' },
   'score-concurrency': { type: 'string' },
   'decode-browsers': { type: 'string' },
   'drop-decode': { type: 'string' },
@@ -198,6 +199,10 @@ export async function resolveConfig(values, positionals) {
     // HDR mode (src/hdr.js): the input is a PQ PNG and this is the SDR
     // rendition of the same image, used as the AVIF gain map's base.
     sdr: (values.sdr ?? fileConfig.sdr) ? path.resolve(values.sdr ?? fileConfig.sdr) : null,
+    // Score with ColorVideoVDP as well as SSIMULACRA2 (src/cvvdp.js). The
+    // prepared setup replaces this with an object once the run has a reference.
+    useCvvdp: values.cvvdp === true || fileConfig.cvvdp === true,
+    cvvdp: null,
     scoreConcurrency: Number(pick('score-concurrency', 'scoreConcurrency', defaultConcurrency())),
 
     // Browser decode timing. The default set is best-effort: a browser that
@@ -316,6 +321,8 @@ Options:
                              not available for HDR input)
   --sdr FILE                 HDR mode: the input is an HDR (PQ) PNG and FILE is the
                              SDR rendition, used as the AVIF gain map's base
+  --cvvdp                    also score with ColorVideoVDP (needs the venv in
+                             tools/cvvdp; see README)
   --score-concurrency N      parallel scoring jobs (default cores-2, max 8)
 
   --decode-browsers LIST     chrome, firefox, safari, safari-preview,

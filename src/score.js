@@ -7,6 +7,7 @@
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { scoreCvvdp, toTiff } from './cvvdp.js';
 import { run } from './exec.js';
 import { PRIMARIES_BY_CICP, assertHdrImage, readCicp } from './hdr.js';
 import { readHeader } from './png.js';
@@ -36,9 +37,10 @@ export async function decodeAndScore({
   workDir,
   keepDecoded = false,
   hdr = null,
+  cvvdp = null,
 }) {
   if (hdr) {
-    return decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr });
+    return decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr, cvvdp });
   }
 
   const decodedPath = path.join(
@@ -70,6 +72,7 @@ export async function decodeAndScore({
 
     return {
       score,
+      cvvdp: await cvvdpScore({ cvvdp, decodedPath }),
       decodeMs: decode.ms,
       scoreMs: ms,
       strippedChunks,
@@ -87,7 +90,7 @@ export async function decodeAndScore({
  * PU21 SSIMULACRA2 (tools/hdr-ssim2). No chunk stripping here -- the cICP chunk
  * is what proves the decode came out as PQ in the right primaries.
  */
-async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr }) {
+async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr, cvvdp }) {
   const decodedPath = path.join(
     workDir,
     `${path.basename(bitstream, path.extname(bitstream))}.decoded.png`,
@@ -109,6 +112,7 @@ async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader,
 
     return {
       score: parseScore(stdout),
+      cvvdp: await cvvdpScore({ cvvdp, decodedPath }),
       decodeMs: decode.ms,
       scoreMs: ms,
       strippedChunks: [],
@@ -118,6 +122,21 @@ async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader,
     };
   } finally {
     if (!keepDecoded) await rm(decodedPath, { force: true });
+  }
+}
+
+/**
+ * ColorVideoVDP on the same decode, when --cvvdp is on. `cvvdp` carries the
+ * prepared setup plus the reference already converted to TIFF (src/cvvdp.js).
+ */
+async function cvvdpScore({ cvvdp, decodedPath }) {
+  if (!cvvdp) return undefined;
+  const tif = decodedPath.replace(/\.png$/, '.tif');
+  try {
+    await toTiff(decodedPath, tif);
+    return await scoreCvvdp({ cvvdp, test: tif, reference: cvvdp.referenceTiff });
+  } finally {
+    await rm(tif, { force: true });
   }
 }
 

@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import { jobKey } from './cache.js';
 import { getCodec } from './codecs/index.js';
+import { isCurrent } from './cvvdp.js';
 import { run as exec } from './exec.js';
 import { formatDuration } from './progress.js';
 import { CostModel, planJobs, shouldRepeatAgain } from './schedule.js';
@@ -100,6 +101,17 @@ export function keyForJob({ job, referenceHash, versions }) {
  * across runs, so this is what distinguishes "in this run's grid" from "measured
  * here at some point with other settings".
  */
+/**
+ * Does a stored result still need scoring? Either it has no score, or
+ * --cvvdp is on and its JOD is missing or came from a different ColorVideoVDP
+ * version or display model. The JOD is deliberately not in the cache key:
+ * turning --cvvdp on, or upgrading it, should re-score, never re-encode.
+ */
+export function needsScoring(result, config) {
+  if (result?.score === undefined) return true;
+  return Boolean(config.cvvdp) && !isCurrent(result.cvvdp, config.cvvdp);
+}
+
 export function partitionCached({ jobs, store, referenceHash, versions, config }) {
   const cachedKeys = new Set();
   const keys = new Set();
@@ -109,7 +121,7 @@ export function partitionCached({ jobs, store, referenceHash, versions, config }
     keys.add(key);
     const cached = store.get(key);
     const hasWantedTimings = config.timing.every((m) => cached?.timings?.[m]);
-    if (!config.force && cached && cached.score !== undefined && hasWantedTimings) {
+    if (!config.force && cached && !needsScoring(cached, config) && hasWantedTimings) {
       cachedKeys.add(key);
     } else {
       todo.push(job);
@@ -243,7 +255,7 @@ export async function encodePhase({
     // Skip only if it is scored *and* already carries every timing mode this
     // run asked for; otherwise fall through and measure what is missing.
     const hasWantedTimings = config.timing.every((m) => cached?.timings?.[m]);
-    if (cached && !config.force && cached.score !== undefined && hasWantedTimings) {
+    if (cached && !config.force && !needsScoring(cached, config) && hasWantedTimings) {
       skipped += 1;
       // Zero weight: this job costs no time, so crediting its estimate would
       // distort the progress rate and with it the ETA.
@@ -253,10 +265,10 @@ export async function encodePhase({
 
     const bitstream = path.join(assetsDir, bitstreamName(job));
 
-    // Encoded on a previous run but interrupted before scoring: keep the
-    // original timings (re-encoding would throw away real measurements) and
-    // just hand it to phase 2.
-    if (cached && !config.force && cached.score === undefined) {
+    // Encoded on a previous run but not (fully) scored -- interrupted, or a
+    // metric was added since: keep the original timings (re-encoding would
+    // throw away real measurements) and just hand it to phase 2.
+    if (cached && !config.force && needsScoring(cached, config)) {
       if (await fileExists(bitstream)) {
         reusedBitstreams += 1;
         pending.push({ job, result: cached, bitstream, codec });
@@ -412,10 +424,12 @@ export async function scorePhase({
       workDir: tempDir,
       keepDecoded: config.keepDecoded,
       hdr: reference.hdr ?? null,
+      cvvdp: config.cvvdp ?? null,
     });
 
     Object.assign(entry.result, {
       score: scored.score,
+      ...(scored.cvvdp ? { cvvdp: scored.cvvdp } : {}),
       decodeMs: scored.decodeMs,
       scoreMs: scored.scoreMs,
       strippedChunks: scored.strippedChunks,
