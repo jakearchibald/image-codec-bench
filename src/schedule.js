@@ -93,19 +93,24 @@ export function buildSeries(config) {
     // Codecs with no subsampling axis (JXL) get a single null pass. Accepting a
     // bare value as well as a list keeps older configs working.
     const yuvs = toList(codecConfig.yuv);
-    for (const depth of depths) {
-      for (const yuv of yuvs) {
-        for (const effort of codecConfig.effort) {
-          series.push({
-            id: seriesId(codecName, effort, depth, yuv),
-            codec: codecName,
-            effort,
-            depth,
-            yuv,
-            qalpha: codecConfig.qalpha ?? null,
-            hdr: Boolean(config.hdr),
-            qualities: bisectionOrder(codecConfig.quality),
-          });
+    // HDR runs only: how AVIF carries the HDR (gain map, or PQ like JXL).
+    const hdrModes = config.hdr && codecConfig.hdrModes ? codecConfig.hdrModes : [null];
+    for (const hdrMode of hdrModes) {
+      for (const depth of depths) {
+        for (const yuv of yuvs) {
+          for (const effort of codecConfig.effort) {
+            series.push({
+              id: seriesId(codecName, effort, depth, yuv, hdrMode),
+              codec: codecName,
+              effort,
+              depth,
+              yuv,
+              hdrMode,
+              qalpha: codecConfig.qalpha ?? null,
+              hdr: Boolean(config.hdr),
+              qualities: bisectionOrder(codecConfig.quality),
+            });
+          }
         }
       }
     }
@@ -119,9 +124,12 @@ function toList(value) {
   return Array.isArray(value) ? value : [value];
 }
 
-export function seriesId(codec, effort, depth, yuv) {
+export function seriesId(codec, effort, depth, yuv, hdrMode = null) {
   const parts = [codec, `e${effort}`, `d${depth}`];
   if (yuv) parts.push(`yuv${yuv}`);
+  // Gain map is the original HDR mode, so it keeps the plain id: series
+  // stored before the other modes existed still group with new results.
+  if (hdrMode && hdrMode !== 'gainmap') parts.push(hdrMode);
   return parts.join('-');
 }
 
@@ -144,6 +152,7 @@ export function interleave(series) {
         yuv: s.yuv,
         qalpha: s.qalpha,
         hdr: s.hdr,
+        hdrMode: s.hdrMode,
         round,
       });
     }

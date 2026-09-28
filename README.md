@@ -86,6 +86,17 @@ node src/cli.js neon-hdr.png --sdr neon-sdr.png --no-timing
   `avifgainmaputil combine` so that applying it in full reproduces the HDR PNG. The gain
   map's quality tracks `-q` (its default is 60 whatever `-q` is); it is 8-bit, full
   resolution. `-d`/`-y` apply to the base.
+- **`--avif-hdr`** picks how AVIF carries the HDR, and takes a comma list; each mode is
+  its own series:
+  - `gainmap` (default): SDR PNG base + gain map up to the HDR PNG.
+  - `gainmap-hdr`: HDR PNG base, as PQ, + gain map down to the SDR PNG (the direction
+    JXL's gain maps are meant for). Its scored image *is* its base, so it scores exactly
+    like `pq`; the difference is the bytes of the gain map, which only serves SDR displays
+    and whose quality isn't measured.
+  - `pq`: the HDR PNG as PQ, like for like with JXL.
+
+  PQ and HDR-base AVIF want `--avif-depth 10` or 12; the CLI warns at 8, which bands. Both
+  decode at 16-bit, so only the SDR-base gain map has the 12-bit scoring penalty.
 - **JXL** encodes the HDR PNG as PQ. Linear-light JXL looked closer to the gain map in
   Chrome but was wrong in Safari, and much of the difference depended on monitor brightness.
 - **Scoring** compares against the HDR PNG at full precision. AVIF gain maps are rendered

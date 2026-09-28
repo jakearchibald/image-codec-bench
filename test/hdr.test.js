@@ -176,7 +176,8 @@ test('HDR avif encode: combine builds the gain-map image from both PNGs', () => 
   assert.ok(args.includes('--ignore-profile'));
   assert.equal(args[args.indexOf('--cicp-base') + 1], '1/13/6');
   assert.equal(args[args.indexOf('--cicp-alternate') + 1], '9/16/0');
-  assert.equal(avif.hdrEncoder, 'avifgainmaputil');
+  assert.equal(avif.hdrEncoderFor('gainmap'), 'avifgainmaputil');
+  assert.equal(avif.hdrEncoderFor(null), 'avifgainmaputil');
 });
 
 test('SDR avif encode is untouched by HDR mode', () => {
@@ -250,4 +251,98 @@ test('report original is the input file, SDR and HDR alike', async () => {
   });
   assert.equal(sdr.src, '../../images/f1.png');
   assert.match(sdr.detail, /downscaled to 1000×500/);
+});
+
+test('--avif-hdr parses to canonical order and rejects unknown modes', async () => {
+  const { parseHdrModes } = await import('../src/config.js');
+  assert.deepEqual(parseHdrModes('pq,gainmap'), ['gainmap', 'pq']);
+  assert.deepEqual(parseHdrModes('pq'), ['pq']);
+  assert.throws(() => parseHdrModes('hlg'), /gainmap/);
+});
+
+test('each AVIF HDR mode is its own series; gain-map ids are unchanged', () => {
+  const series = buildSeries({
+    codecs: ['avif', 'jxl'],
+    hdr: true,
+    avif: { quality: [50], effort: [6], depth: [10], yuv: ['444'], qalpha: 'match', hdrModes: ['gainmap', 'pq'] },
+    jxl: { quality: [50], effort: [7], depth: [8] },
+  });
+  assert.deepEqual(series.map((s) => s.id), ['avif-e6-d10-yuv444', 'avif-e6-d10-yuv444-pq', 'jxl-e7-d8']);
+  // Outside HDR mode the axis doesn't exist.
+  const sdr = buildSeries({
+    codecs: ['avif'],
+    avif: { quality: [50], effort: [6], depth: [8], yuv: ['444'], qalpha: 'match', hdrModes: ['gainmap', 'pq'] },
+  });
+  assert.deepEqual(sdr.map((s) => s.hdrMode), [null]);
+});
+
+test('PQ AVIF has its own cache key; gain-map keys are what they were', () => {
+  const job = { codec: 'avif', quality: 60, effort: 6, depth: 10, yuv: '444', qalpha: 'match', hdr: true };
+  assert.deepEqual(encodeParams({ ...job, hdrMode: 'gainmap' }), encodeParams(job));
+  assert.equal(encodeParams({ ...job, hdrMode: 'pq' }).hdrMode, 'pq');
+  assert.equal(encodeParams({ ...job, hdrMode: 'pq' }).qgainmap, undefined);
+});
+
+test('PQ AVIF: avifenc on the HDR PNG, decoded plainly at 16-bit', async () => {
+  const { encoderFor } = await import('../src/run.js');
+  const args = avif.buildEncodeArgs({
+    input: { sdr: 'sdr.png', hdr: 'hdr.png' }, output: 'o.avif', quality: 55, effort: 6,
+    depth: 10, yuv: '444', threads: 'multi', hdr: HDR, hdrMode: 'pq',
+  });
+  assert.deepEqual(args.slice(0, 2), ['hdr.png', 'o.avif']);
+  assert.ok(!args.includes('combine') && !args.includes('--qgain-map'));
+  assert.equal(args[args.indexOf('--cicp') + 1], '9/16/9');
+  assert.equal(encoderFor(avif, { hdr: HDR }, { hdrMode: 'pq' }), 'avifenc');
+  assert.equal(encoderFor(avif, { hdr: HDR }, { hdrMode: 'gainmap' }), 'avifgainmaputil');
+  assert.equal(encoderFor(avif, {}, { hdrMode: null }), 'avifenc');
+  assert.deepEqual(avif.hdrDecode({ input: 'a.avif', output: 'a.png', hdr: HDR, hdrMode: 'pq' }),
+    { command: 'avifdec', args: ['-d', '16', 'a.avif', 'a.png'] });
+});
+
+test('comparison picks each kind of AVIF separately, and labels them', async () => {
+  const { pickVariants } = await import('../src/report/build.js');
+  const row = (hdrMode, score) => ({
+    key: `${hdrMode}${score}`, codec: 'avif', hdrMode, score, effort: 6, effortLabel: 's6',
+    quality: 50, bytes: 1000, bpp: 0.1, bitstream: 'b', yuv: '444', depth: 10,
+  });
+  const { variants } = pickVariants({
+    results: [row('gainmap', 60), row('pq', 61)],
+    lossless: [],
+    referenceRelPath: 'reference.png',
+    targets: [60],
+  });
+  const names = variants.slice(1).map((v) => v.name);
+  assert.ok(names.some((n) => n.startsWith('AVIF gain map')));
+  assert.ok(names.some((n) => n.startsWith('AVIF PQ')));
+});
+
+test('gain map on an HDR base: combine with the inputs swapped, decoded as its base', () => {
+  const args = avif.buildEncodeArgs({
+    input: { sdr: 'sdr.png', hdr: 'hdr.png' }, output: 'o.avif', quality: 55, effort: 6,
+    depth: 10, yuv: '444', threads: 'multi', hdr: HDR, hdrMode: 'gainmap-hdr',
+  });
+  assert.deepEqual(args.slice(0, 4), ['combine', 'hdr.png', 'sdr.png', 'o.avif']);
+  assert.equal(args[args.indexOf('--cicp-base') + 1], '9/16/9');
+  assert.equal(args[args.indexOf('--cicp-alternate') + 1], '1/13/0');
+  assert.equal(args[args.indexOf('--qgain-map') + 1], '55');
+  assert.equal(avif.hdrEncoderFor('gainmap-hdr'), 'avifgainmaputil');
+  // The HDR rendition is the base, so a plain 16-bit decode: no 12-bit tone map.
+  assert.deepEqual(avif.hdrDecode({ input: 'a.avif', output: 'a.png', hdr: HDR, hdrMode: 'gainmap-hdr' }),
+    { command: 'avifdec', args: ['-d', '16', 'a.avif', 'a.png'] });
+  const job = { codec: 'avif', quality: 60, effort: 6, depth: 10, yuv: '444', qalpha: 'match', hdr: true };
+  const params = encodeParams({ ...job, hdrMode: 'gainmap-hdr' });
+  assert.equal(params.hdrMode, 'gainmap-hdr');
+  assert.equal(params.qgainmap, 60);
+});
+
+test('hdrCaveats describe whichever AVIF modes a run used', async () => {
+  const { hdrCaveats } = await import('../src/report/build.js');
+  const hdr = { primariesName: 'bt2020', colourSource: 'cICP chunk', sdr: { primariesName: 'srgb', colourSource: 'ICC profile' } };
+  const text = (modes) => hdrCaveats(hdr, { modes }).join(' ');
+  assert.match(text(['pq']), /like-for-like/);
+  assert.doesNotMatch(text(['pq']), /precision penalty/);
+  assert.match(text(['gainmap']), /precision penalty/);
+  assert.match(text(['gainmap-hdr']), /never measured/);
+  assert.doesNotMatch(text(['gainmap-hdr']), /precision penalty/);
+  assert.match(text(['gainmap', 'gainmap-hdr', 'pq']), /3 kinds of AVIF/);
 });

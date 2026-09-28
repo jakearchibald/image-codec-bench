@@ -18,6 +18,7 @@ export const OPTIONS = {
   'avif-depth': { type: 'string' },
   'avif-yuv': { type: 'string' },
   'avif-qalpha': { type: 'string' },
+  'avif-hdr': { type: 'string' },
 
   'jxl-quality': { type: 'string' },
   'jxl-effort': { type: 'string' },
@@ -107,6 +108,27 @@ export function parseYuvModes(spec) {
   return YUV_MODES.filter((m) => modes.includes(m));
 }
 
+/**
+ * How AVIF can carry HDR, in canonical order: SDR base + gain map up to HDR,
+ * HDR base + gain map down to SDR, or plain PQ.
+ */
+export const AVIF_HDR_MODES = ['gainmap', 'gainmap-hdr', 'pq'];
+
+/**
+ * Parse `--avif-hdr`: any of the modes, comma-separated. Each is its own
+ * series, so several chart the AVIF approaches against each other and JXL.
+ */
+export function parseHdrModes(spec) {
+  const modes = String(spec).split(',').map((m) => m.trim().toLowerCase()).filter(Boolean);
+  if (modes.length === 0) throw new Error('--avif-hdr needs at least one mode');
+  for (const mode of modes) {
+    if (!AVIF_HDR_MODES.includes(mode)) {
+      throw new Error(`--avif-hdr modes are ${AVIF_HDR_MODES.join(', ')} (got ${mode})`);
+    }
+  }
+  return AVIF_HDR_MODES.filter((m) => modes.includes(m));
+}
+
 function parseTiming(spec) {
   const modes = String(spec)
     .split(',')
@@ -176,7 +198,9 @@ export async function resolveConfig(values, positionals) {
       depth: parseRange(pick('avif-depth', 'avifDepth', avif.defaults.depth.join(',')), { integer: true }),
       yuv: parseYuvModes(pick('avif-yuv', 'avifYuv', avif.defaults.yuv)),
       qalpha: String(pick('avif-qalpha', 'avifQalpha', avif.defaults.qalpha)),
+      hdrModes: parseHdrModes(pick('avif-hdr', 'avifHdr', 'gainmap')),
     },
+    avifHdrExplicit: Boolean(values['avif-hdr'] ?? fileConfig.avifHdr),
 
     jxl: {
       quality: parseRange(pick('jxl-quality', 'jxlQuality', rangeSpec(jxl.defaults.quality)), { integer: true }),
@@ -321,6 +345,11 @@ Options:
                              not available for HDR input)
   --sdr FILE                 HDR mode: the input is an HDR (PQ) PNG and FILE is the
                              SDR rendition, used as the AVIF gain map's base
+  --avif-hdr LIST            HDR mode: gainmap | gainmap-hdr | pq, comma-separated
+                             (default gainmap). gainmap = SDR base + gain map up
+                             to HDR; gainmap-hdr = HDR base + gain map down to
+                             SDR; pq = the HDR PNG as PQ, like JXL. Each is its
+                             own series
   --cvvdp                    also score with ColorVideoVDP (needs the venv in
                              tools/cvvdp; see README)
   --score-concurrency N      parallel scoring jobs (default cores-2, max 8)

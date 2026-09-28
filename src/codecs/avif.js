@@ -45,8 +45,14 @@ export function buildEncodeArgs({
   threads = 'multi',
   lossless = false,
   hdr = null,
+  hdrMode = null,
 }) {
-  if (hdr) return buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads, hdr });
+  if (hdr && hdrMode === 'pq') return buildPqArgs({ input, output, quality, effort, depth, yuv, threads, hdr });
+  if (hdr) {
+    return buildGainMapArgs({
+      input, output, quality, effort, depth, yuv, threads, hdr, hdrBase: hdrMode === 'gainmap-hdr',
+    });
+  }
 
   const args = [input, output, '--ignore-exif', '--ignore-xmp'];
 
@@ -70,15 +76,22 @@ export function buildEncodeArgs({
 }
 
 /**
- * HDR mode: `avifgainmaputil combine` builds the gain-map AVIF from both PNGs
- * -- the SDR one as the base, and a gain map computed so that applying it in
- * full reproduces the HDR one. `-d`/`-y` apply to the base; the gain map is
- * libavif's default 8-bit 4:4:4 at full resolution.
+ * HDR mode: `avifgainmaputil combine` builds the gain-map AVIF from both PNGs.
+ * By default the SDR one is the base, with a gain map computed so applying it
+ * in full reproduces the HDR one. With `hdrBase` (--avif-hdr gainmap-hdr) it
+ * runs the other way: the HDR PNG is the base, as PQ, and the gain map maps
+ * down to the SDR one -- the direction JXL's jhgm is meant for. `-d`/`-y`
+ * apply to the base; the gain map is libavif's default 8-bit 4:4:4, full size.
  */
-function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads, hdr }) {
+function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads, hdr, hdrBase = false }) {
   const { sdr } = hdr;
+  const sdrCicp = `${sdr.primaries}/${sdr.transfer}/6`;
+  // An HDR base is YUV-coded PQ: BT.2020 NCL matrix for BT.2020, as HDR10.
+  const hdrCicp = `${hdr.primaries}/${hdr.transfer}/${hdrBase ? (hdr.primaries === 9 ? 9 : 6) : 0}`;
   return [
-    'combine', input.sdr, input.hdr, output,
+    'combine',
+    ...(hdrBase ? [input.hdr, input.sdr] : [input.sdr, input.hdr]),
+    output,
     // The gain map defaults to q60 whatever -q is, so it tracks -q.
     '-q', String(quality), '--qgain-map', String(quality),
     '-y', yuv, '-d', String(depth),
@@ -89,8 +102,27 @@ function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads,
     // --cicp-alternate both images read as SDR and the headroom comes out 0.
     // Matrix 6 is what libavif uses for YUV anyway; --cicp takes all three.
     '--ignore-profile',
-    '--cicp-base', `${sdr.primaries}/${sdr.transfer}/6`,
-    '--cicp-alternate', `${hdr.primaries}/${hdr.transfer}/0`,
+    '--cicp-base', hdrBase ? hdrCicp : sdrCicp,
+    '--cicp-alternate', hdrBase ? `${sdr.primaries}/${sdr.transfer}/0` : hdrCicp,
+    '--ignore-exif', '--ignore-xmp',
+  ];
+}
+
+/**
+ * HDR mode, `--avif-hdr pq`: the HDR PNG encoded directly as PQ, the same
+ * input JXL gets. Colour goes in as CICP (the reference PNG carries only a
+ * cICP chunk); the matrix is BT.2020 NCL for BT.2020 content, as HDR10 does,
+ * and BT.601 otherwise, as elsewhere in this file.
+ */
+function buildPqArgs({ input, output, quality, effort, depth, yuv, threads, hdr }) {
+  const matrix = hdr.primaries === 9 ? 9 : 6;
+  return [
+    input.hdr, output,
+    '-q', String(quality),
+    '-y', yuv, '-d', String(depth),
+    '-s', String(effort),
+    '-j', threads === 'single' ? '1' : 'all',
+    '--ignore-icc', '--cicp', `${hdr.primaries}/${hdr.transfer}/${matrix}`,
     '--ignore-exif', '--ignore-xmp',
   ];
 }
@@ -102,18 +134,24 @@ export function buildDecodeArgs({ input, output, referenceDepth = 8 }) {
 }
 
 /**
- * HDR mode: render the gain map in full, to a 16-bit PQ PNG in the HDR PNG's
+ * HDR mode, gain map: render it in full, to a 16-bit PQ PNG in the HDR PNG's
  * primaries, for scoring against it. Only 12-bit precision, the tone mapper's
  * widest -- which costs AVIF points against a 16-bit reference (see the report
  * caveat in report/build.js).
  */
-export function hdrDecode({ input, output, hdr }) {
+export function hdrDecode({ input, output, hdr, hdrMode = null }) {
+  // A PQ AVIF, or a gain map on an HDR base, *is* the HDR image: a plain
+  // 16-bit decode of the base (avifdec ignores gain maps), written with the
+  // file's cICP. No 12-bit limit here, unlike the tone mapper.
+  if (hdrMode === 'pq' || hdrMode === 'gainmap-hdr') {
+    return { command: 'avifdec', args: ['-d', '16', input, output] };
+  }
   return { command: 'avifgainmaputil', args: tonemapArgs({ input, output, hdr }) };
 }
 
 export const encoder = 'avifenc';
-/** HDR mode builds gain-map AVIFs with combine instead. */
-export const hdrEncoder = 'avifgainmaputil';
+/** HDR mode builds gain-map AVIFs with combine; PQ AVIFs are plain avifenc. */
+export const hdrEncoderFor = (hdrMode) => (hdrMode === 'pq' ? 'avifenc' : 'avifgainmaputil');
 export const decoder = 'avifdec';
 
 /**

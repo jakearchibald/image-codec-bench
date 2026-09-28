@@ -658,11 +658,28 @@
       );
       // AVIF solid, JXL dashed, so the two codecs stay distinguishable even where
       // colours run out.
-      const dashOf = (id) => (id.startsWith("jxl") ? [6, 3] : []);
+      // AVIF HDR modes (--avif-hdr) get their own dash patterns, so they read
+      // apart from each other and from JXL (dashed) even where colours repeat.
+      const dashOf = (id) =>
+        id.startsWith("jxl") ? [6, 3]
+          : id.endsWith("-pq") ? [2, 3]
+            : id.endsWith("-gainmap-hdr") ? [10, 3, 2, 3]
+              : [];
+      const severalAvifModes = (run.config.avif?.hdrModes ?? []).length > 1;
+      /** Which kind of HDR AVIF a row is, in words. */
+      const avifHdrLabel = (r) =>
+        r.hdrMode === "pq" ? "PQ"
+          : r.hdrMode === "gainmap-hdr" ? "gain map, HDR base"
+            : "gain map, SDR base";
+      const hasPqAvif = results.some((r) => r.hdrMode && r.hdrMode !== "gainmap");
 
       const seriesLabel = (id) => {
         const first = bySeries.get(id)[0];
-        const parts = [first.codec.toUpperCase(), first.effortLabel];
+        const parts = [first.codec.toUpperCase()];
+        if (first.codec === "avif" && run.hdr && (severalAvifModes || first.hdrMode === "pq" || first.hdrMode === "gainmap-hdr")) {
+          parts.push(avifHdrLabel(first));
+        }
+        parts.push(first.effortLabel);
         if (first.depth !== 8) parts.push(`${first.depth}-bit`);
         if (first.yuv && first.yuv !== "444") parts.push(first.yuv);
         return parts.join(" ");
@@ -681,6 +698,7 @@
             ...(hasDepthAxis(r.codec)
               ? [`depth: ${r.depth}-bit${r.yuv ? `, yuv ${r.yuv}` : ""}`]
               : []),
+            ...(r.codec === "avif" && run.hdr ? [`HDR as: ${avifHdrLabel(r)}`] : []),
           ];
           if (r.qalpha != null) lines.push(`qalpha: ${r.qalpha}`);
           for (const [name, m] of Object.entries(r.decode ?? {})) {
@@ -1177,6 +1195,7 @@
           "effort",
           "depth",
           "yuv",
+          ...(hasPqAvif ? ["AVIF HDR"] : []),
           "bytes",
           "bpp",
           metric,
@@ -1196,6 +1215,9 @@
           r.effortLabel,
           hasDepthAxis(r.codec) ? `${r.depth}-bit` : "—",
           r.yuv ?? "—",
+          ...(hasPqAvif
+            ? [r.codec !== "avif" ? "—" : avifHdrLabel(r)]
+            : []),
           r.bytes.toLocaleString(),
           r.bpp.toFixed(4),
           r.score.toFixed(4),

@@ -59,6 +59,9 @@ async function main(argv) {
   const inputBytes = await readFile(config.input);
   config.hdr = await hdrMode(config, inputBytes);
   const sdrBytes = config.hdr ? await readFile(config.sdr) : null;
+  if (!config.hdr && config.avifHdrExplicit) {
+    throw new Error('--avif-hdr only applies to HDR runs (an HDR PNG with --sdr).');
+  }
   if (config.hdr) {
     if (config.maxPixels > 0) {
       throw new Error(
@@ -142,12 +145,25 @@ async function main(argv) {
       const { hdr } = reference;
       process.stdout.write(
         `HDR: PQ, ${hdr.primariesName} primaries, peak ${hdr.peakNits.toFixed(0)} nits ` +
-          `(${(2 ** hdr.headroom).toFixed(2)}x SDR white at ${SDR_WHITE_NITS} nits); SDR base ` +
+          `(${(2 ** hdr.headroom).toFixed(2)}x SDR white at ${SDR_WHITE_NITS} nits); SDR PNG ` +
           `${hdr.sdr.primariesName}, ${hdr.sdr.depth}-bit.\n` +
-          '     AVIF: SDR PNG base + gain map to the HDR PNG (gain map quality = -q).\n' +
+          `     AVIF: ${config.avif.hdrModes.map((mode) => ({
+            gainmap: 'SDR PNG base + gain map up to the HDR PNG',
+            'gainmap-hdr': 'HDR PNG base (PQ) + gain map down to the SDR PNG',
+            pq: 'the HDR PNG as PQ',
+          })[mode]).join(';\n           ')}.${config.avif.hdrModes.some((m) => m !== 'pq')
+            ? ' Gain map quality = -q.' : ''}\n` +
           '     JXL: the HDR PNG as PQ. Scored against the HDR PNG with experimental PU21\n' +
           '     SSIMULACRA2 (fast-ssim2).\n' +
           '     Lossless suite skipped: the two lossless files would not be the same image.\n',
+      );
+    }
+    const pqBase = config.avif.hdrModes.filter((m) => m === 'pq' || m === 'gainmap-hdr');
+    if (reference.hdr && pqBase.length > 0 && config.avif.depth.includes(8)) {
+      process.stdout.write(
+        `Note: ${pqBase.join(' and ')} AVIF at 8-bit will band. PQ spreads 0-10,000 nits over\n` +
+          '      the code values, so it wants --avif-depth 10 (or 12); 8-bit is fine for an\n' +
+          '      SDR base.\n',
       );
     }
     if (reference.hasAlpha) {

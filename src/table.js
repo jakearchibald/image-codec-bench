@@ -26,6 +26,17 @@ const COLUMNS = [
   { key: 'effortLabel', header: 'effort', align: 'left' },
   { key: 'depth', header: 'depth', align: 'right', format: depthCell, csv: depthCsv },
   { key: 'yuv', header: 'yuv', align: 'left', format: (v) => v ?? '--' },
+  // HDR runs using a non-default --avif-hdr mode (see activeColumns): which kind of AVIF.
+  {
+    key: 'hdrMode',
+    header: 'hdr',
+    align: 'left',
+    format: (v, row) => (row.codec !== 'avif' ? '--' : v ?? 'gainmap'),
+    csv: (v, row) => (row.codec !== 'avif' ? null : v ?? 'gainmap'),
+    csvHeader: 'avif_hdr',
+    optional: true,
+    shownWhen: (results) => results.some((row) => row.hdrMode && row.hdrMode !== 'gainmap'),
+  },
   { key: 'bytes', header: 'bytes', align: 'right', format: (v) => v.toLocaleString('en-US') },
   { key: 'bpp', header: 'bpp', align: 'right', format: (v) => v.toFixed(3) },
   { key: 'score', header: 'ssimu2', align: 'right', format: (v) => (v == null ? '--' : v.toFixed(3)) },
@@ -105,7 +116,11 @@ function get(object, dottedKey) {
  */
 function activeColumns(timingModes, results = []) {
   const base = COLUMNS.filter((column) => {
-    if (column.optional) return results.some((row) => get(row, column.key) != null);
+    if (column.optional) {
+      return column.shownWhen
+        ? column.shownWhen(results)
+        : results.some((row) => get(row, column.key) != null);
+    }
     if (!column.key.startsWith('timings.')) return true;
     const mode = column.key.split('.')[1];
     return timingModes.includes(mode);

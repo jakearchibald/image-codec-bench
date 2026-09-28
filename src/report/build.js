@@ -145,7 +145,18 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
     },
   ];
 
-  const codecs = [...new Set(results.map((r) => r.codec))].sort();
+  // Picked per group, not per codec: in an HDR run with --avif-hdr gainmap,pq
+  // the two kinds of AVIF are different things and each gets its own picks.
+  const groupOf = (r) =>
+    (r.hdrMode && r.hdrMode !== 'gainmap' ? `${r.codec}-${r.hdrMode}` : r.codec);
+  const groups = [...new Set(results.map(groupOf))].sort();
+  const severalAvifModes = groups.filter((g) => g.startsWith('avif')).length > 1;
+  const groupLabel = (r) => {
+    if (r.codec !== 'avif') return r.codec.toUpperCase();
+    if (r.hdrMode === 'pq') return 'AVIF PQ';
+    if (r.hdrMode === 'gainmap-hdr') return 'AVIF gain map (HDR base)';
+    return severalAvifModes ? 'AVIF gain map (SDR base)' : 'AVIF';
+  };
 
   // Only name the axes that actually vary. With several subsampling modes or
   // bit depths in one run, two variants at the same effort and quality would
@@ -159,11 +170,11 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
   // The slowest configured effort per codec, since that's the quality ceiling.
   // avifenc -s counts down (0 is slowest); cjxl -e counts up.
   const candidatesByCodec = new Map();
-  for (const codec of codecs) {
-    const forCodec = results.filter((r) => r.codec === codec);
-    const efforts = forCodec.map((r) => r.effort);
-    const slowest = codec === 'avif' ? Math.min(...efforts) : Math.max(...efforts);
-    candidatesByCodec.set(codec, forCodec.filter((r) => r.effort === slowest));
+  for (const group of groups) {
+    const forGroup = results.filter((r) => groupOf(r) === group);
+    const efforts = forGroup.map((r) => r.effort);
+    const slowest = forGroup[0].codec === 'avif' ? Math.min(...efforts) : Math.max(...efforts);
+    candidatesByCodec.set(group, forGroup.filter((r) => r.effort === slowest));
   }
 
   // Derive targets from the candidates -- the encodes that can actually be
@@ -176,8 +187,8 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
     );
 
   for (const target of scoreTargets) {
-    for (const codec of codecs) {
-      const candidates = candidatesByCodec.get(codec) ?? [];
+    for (const group of groups) {
+      const candidates = candidatesByCodec.get(group) ?? [];
       if (candidates.length === 0) continue;
 
       const best = candidates.reduce((a, b) =>
@@ -189,6 +200,7 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
       if (variants.some((v) => v.key === best.key)) continue;
 
       const settings = [best.effortLabel, `q${best.quality}`];
+      const { codec } = best;
       if (showDepth && DEPTH_AXIS_CODECS.includes(codec)) settings.push(`${best.depth}-bit`);
       if (showYuv && best.yuv) settings.push(best.yuv);
 
@@ -196,7 +208,7 @@ export function pickVariants({ results, lossless, referenceRelPath, targets }) {
         // Labelled with the *measured* score, never the target. The target only
         // spreads the picks across the range; printing it was what made a
         // mislabelling guard necessary in the first place.
-        name: `${codec.toUpperCase()} ~${Math.round(best.score)} (${settings.join(' ')})`,
+        name: `${groupLabel(best)} ~${Math.round(best.score)} (${settings.join(' ')})`,
         detail:
           `measured ${best.score.toFixed(2)} · ${formatBytes(best.bytes)} · ` +
           `${best.bpp.toFixed(3)} bpp`,
@@ -244,15 +256,33 @@ export function metricLabel(run) {
 }
 
 /** HDR-mode caveats. The comparison is not symmetric, so the report says how. */
-export function hdrCaveats(hdr, { timed = false } = {}) {
+export function hdrCaveats(hdr, { timed = false, modes = ['gainmap'] } = {}) {
   const primaries = { srgb: 'sRGB', p3: 'Display P3', bt2020: 'BT.2020' };
+  const sdrBase = modes.includes('gainmap');
+  const hdrBase = modes.includes('gainmap-hdr');
+  const pq = modes.includes('pq');
+  const gainMap = sdrBase || hdrBase;
+  const gainMapSettings =
+    'the gain map at the same quality as the base (<code>--qgain-map</code> = <code>-q</code>; ' +
+    'the default is 60 whatever <code>-q</code> is), 8-bit, full resolution';
+  const kinds = [
+    ...(sdrBase
+      ? ['<em>gain map, SDR base</em>: the SDR PNG as the base, plus a gain map libavif computes ' +
+          'so that applying it in full reproduces the HDR PNG']
+      : []),
+    ...(hdrBase
+      ? ['<em>gain map, HDR base</em>: the HDR PNG as the base, as PQ, plus a gain map down to ' +
+          'the SDR PNG (the direction JXL\u2019s gain maps are meant for)']
+      : []),
+    ...(pq ? ['<em>PQ</em>: the HDR PNG as PQ, exactly as the JXL is'] : []),
+  ];
   return [
-    ...(timed
+    ...(timed && gainMap
       ? [
-          '<strong>Encode times are not the same kind of work.</strong> The AVIF time includes ' +
-            'computing the gain map from both PNGs (<code>avifgainmaputil combine</code>); cjxl ' +
-            'reads one PNG. Both are what each format really costs to produce, but the AVIF ' +
-            'figure is not a pure encoder speed.',
+          '<strong>Encode times are not the same kind of work.</strong> Gain-map AVIF times ' +
+            'include computing the gain map from both PNGs (<code>avifgainmaputil combine</code>); ' +
+            'the PQ encoders read one PNG. Both are what each really costs to produce, but the ' +
+            'gain-map figures are not pure encoder speed.',
         ]
       : []),
     '<strong>HDR scores use an experimental metric.</strong> They come from fast-ssim2\u2019s ' +
@@ -260,33 +290,62 @@ export function hdrCaveats(hdr, { timed = false } = {}) {
       'and takes absolute luminance. It has been validated on one HDR dataset (UPIQ) and is ' +
       '<em>not</em> on the same scale as ordinary SSIMULACRA2, so these numbers cannot be read ' +
       'against SDR runs or the usual quality bands.',
-    '<strong>AVIF scores carry a precision penalty that JXL scores do not.</strong> AVIF gain ' +
-      'maps can only be rendered at 12-bit (libavif\u2019s tone mapper), while JXL decodes at ' +
-      '16-bit, like the reference. SSIMULACRA2 is extremely steep near 100: one value changed by ' +
-      'one code in a 16-bit image scores ~96.7, and rounding a 16-bit image to 15-bit scores ~89. ' +
-      'So an AVIF can\u2019t score much above ~89 however good it is, and near the top of the ' +
-      'range the two curves are not directly comparable.',
-    '<strong>Only the HDR rendition is scored.</strong> AVIF gain maps are rendered in full by ' +
-      'libavif\u2019s tone mapper and compared with the HDR PNG. The SDR rendition, and anything ' +
-      'in between that a display with less headroom would show, is not measured.',
-    '<strong>The two formats are not encoding the same thing.</strong> The AVIF is a gain-map ' +
-      'image: the SDR PNG as its base, plus a gain map libavif computes so that applying it in ' +
-      'full reproduces the HDR PNG, at the same quality as the base (<code>--qgain-map</code> = ' +
-      '<code>-q</code>; the default is 60 whatever <code>-q</code> is), 8-bit, full resolution. ' +
-      'The JXL is the HDR PNG as PQ. That is each format used the way it is meant to be, but on ' +
-      'an SDR display the AVIF shows the SDR PNG while the JXL shows whatever tone mapping the ' +
-      'browser applies.',
-    '<strong>How HDR looks depends on the display.</strong> A gain map scales its boost to the ' +
-      'headroom the display has at that moment; PQ states absolute brightness, which the browser ' +
-      'fits to the display. So the two can look different even where they score the same, and ' +
-      'the difference changes with monitor brightness.',
+    ...(sdrBase
+      ? [
+          '<strong>SDR-base gain-map AVIF scores carry a precision penalty.</strong> Their HDR ' +
+            'rendition can only be rendered at 12-bit (libavif\u2019s tone mapper), while every ' +
+            'other file here decodes at 16-bit, like the reference. SSIMULACRA2 is extremely steep ' +
+            'near 100: one value changed by one code in a 16-bit image scores ~96.7, and rounding ' +
+            'a 16-bit image to 15-bit scores ~89. So an SDR-base gain-map AVIF can\u2019t score ' +
+            'much above ~89 however good it is, and near the top of the range its curve is not ' +
+            'directly comparable with the others.',
+        ]
+      : []),
+    ...(gainMap
+      ? [
+          '<strong>Only the HDR rendition is scored.</strong> For an SDR base that is the gain ' +
+            'map applied in full; for an HDR base it is the base image itself. The SDR rendition, ' +
+            'and anything in between that a display with less headroom would show, is not ' +
+            'measured.' +
+            (hdrBase
+              ? ' So an HDR-base gain map\u2019s own quality is never measured at all, though its ' +
+                'bytes count in the file size \u2014 its curve is a PQ encode plus the cost of ' +
+                'carrying an SDR rendition.'
+              : ''),
+        ]
+      : []),
+    kinds.length === 1 && pq
+      ? '<strong>Both formats encode the same thing:</strong> the HDR PNG as PQ, so this is a ' +
+        'like-for-like comparison. The SDR PNG is not used.'
+      : kinds.length === 1
+        ? `<strong>The two formats are not encoding the same thing.</strong> The AVIF is a ` +
+          `${kinds[0]}, with ${gainMapSettings}. The JXL is the HDR PNG as PQ. That is each ` +
+          'format used the way it is meant to be, but it is not like for like.'
+        : `<strong>${kinds.length} kinds of AVIF are charted:</strong> ${kinds.join('; ')}` +
+          `${gainMap ? `; ${gainMapSettings}` : ''}. The JXL is the HDR PNG as PQ.`,
+    ...(gainMap
+      ? [
+          '<strong>How HDR looks depends on the display.</strong> A gain map lets the viewer ' +
+            'blend between the two renditions to suit the headroom the display has at that ' +
+            'moment; PQ states absolute brightness, which the browser fits to the display. So ' +
+            'files can look different even where they score the same, and the difference changes ' +
+            'with monitor brightness. A viewer that ignores gain maps shows the base: SDR for an ' +
+            'SDR base, PQ for an HDR base.',
+        ]
+      : []),
     `<strong>Colour is signalled as CICP.</strong> The HDR PNG is PQ in ` +
-      `${primaries[hdr.primariesName] ?? hdr.primariesName} (from its ${hdr.colourSource}); the ` +
-      `SDR PNG is ${primaries[hdr.sdr.primariesName] ?? hdr.sdr.primariesName} with the sRGB ` +
-      `curve (from its ${hdr.sdr.colourSource}). Both go into the files as CICP, so neither ` +
-      'format pays for an ICC profile.',
-    '<strong>Browser decode timings include whatever the browser does with the gain ' +
-      'map</strong> for AVIF, and nothing comparable for JXL, which has none.',
+      `${primaries[hdr.primariesName] ?? hdr.primariesName} (from its ${hdr.colourSource})` +
+      (gainMap
+        ? `; the SDR PNG is ${primaries[hdr.sdr.primariesName] ?? hdr.sdr.primariesName} with ` +
+          `the sRGB curve (from its ${hdr.sdr.colourSource})`
+        : '') +
+      '. Colour goes into the files as CICP, so no file pays for an ICC profile.',
+    ...(gainMap
+      ? [
+          '<strong>Browser decode timings include whatever the browser does with the gain ' +
+            'map</strong> for gain-map AVIFs, and nothing comparable for PQ files, which have none.',
+        ]
+      : []),
   ];
 }
 
@@ -390,7 +449,12 @@ export function buildCaveats({ run, results, lossless = [] }) {
       'happens against measured SSIMULACRA2 on the x-axis.',
   ];
 
-  if (run.hdr) caveats.unshift(...hdrCaveats(run.hdr, { timed: run.config.timing.length > 0 }));
+  if (run.hdr) {
+    caveats.unshift(...hdrCaveats(run.hdr, {
+      timed: run.config.timing.length > 0,
+      modes: run.config.avif?.hdrModes ?? ['gainmap'],
+    }));
+  }
   if (run.cvvdp && results.some((r) => r.cvvdp?.jod != null)) caveats.push(...cvvdpCaveats(run.cvvdp));
 
   if (hasAlpha) {
@@ -492,6 +556,7 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
       effortLabel: r.effortLabel,
       depth: r.depth,
       yuv: r.yuv,
+      hdrMode: r.hdrMode ?? null,
       qalpha: r.qalpha,
       bytes: r.bytes,
       bpp: r.bpp,

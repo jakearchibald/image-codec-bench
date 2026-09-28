@@ -37,10 +37,11 @@ export async function decodeAndScore({
   workDir,
   keepDecoded = false,
   hdr = null,
+  hdrMode = null,
   cvvdp = null,
 }) {
   if (hdr) {
-    return decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr, cvvdp });
+    return decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr, hdrMode, cvvdp });
   }
 
   const decodedPath = path.join(
@@ -90,14 +91,14 @@ export async function decodeAndScore({
  * PU21 SSIMULACRA2 (tools/hdr-ssim2). No chunk stripping here -- the cICP chunk
  * is what proves the decode came out as PQ in the right primaries.
  */
-async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr, cvvdp }) {
+async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader, workDir, keepDecoded, hdr, hdrMode, cvvdp }) {
   const decodedPath = path.join(
     workDir,
     `${path.basename(bitstream, path.extname(bitstream))}.decoded.png`,
   );
 
   try {
-    const { command, args } = codec.hdrDecode({ input: bitstream, output: decodedPath, hdr });
+    const { command, args } = codec.hdrDecode({ input: bitstream, output: decodedPath, hdr, hdrMode });
     const decode = await run(command, args);
 
     const raw = await readFile(decodedPath);

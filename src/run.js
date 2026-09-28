@@ -51,14 +51,23 @@ export function encodeParams(job) {
     params.yuv = job.yuv;
     params.qalpha = job.qalpha === 'match' ? job.quality : Number(job.qalpha);
     // Only present in HDR mode, so SDR cache keys are unchanged.
-    if (job.hdr) params.qgainmap = job.quality;
+    // HDR runs only, so SDR cache keys are unchanged. Other modes get their
+    // own field; SDR-base gain-map jobs keep exactly the key they had before
+    // the other modes existed.
+    if (job.hdr) {
+      if (job.hdrMode && job.hdrMode !== 'gainmap') params.hdrMode = job.hdrMode;
+      if (job.hdrMode !== 'pq') params.qgainmap = job.quality;
+    }
   }
   return params;
 }
 
-/** The encoder binary for a codec: HDR mode may use a different tool. */
-export function encoderFor(codec, reference) {
-  return reference.hdr && codec.hdrEncoder ? codec.hdrEncoder : codec.encoder;
+/**
+ * The encoder binary for a job: HDR mode may use a different tool (gain-map
+ * AVIFs are built by avifgainmaputil either way round; PQ AVIFs are avifenc).
+ */
+export function encoderFor(codec, reference, job) {
+  return reference.hdr && codec.hdrEncoderFor ? codec.hdrEncoderFor(job.hdrMode) : codec.encoder;
 }
 
 /**
@@ -143,6 +152,7 @@ function depthPart(job, format) {
 function bitstreamName(job) {
   const parts = [job.codec, `q${job.quality}`, `e${job.effort}`, ...depthPart(job, (d) => `d${d}`)];
   if (job.codec === 'avif') parts.push(`yuv${job.yuv}`);
+  if (job.hdrMode && job.hdrMode !== 'gainmap') parts.push(job.hdrMode);
   return `${parts.join('-')}.${getCodec(job.codec).extension}`;
 }
 
@@ -150,6 +160,7 @@ function bitstreamName(job) {
 function seriesDisplayName(s) {
   const parts = [s.codec, `e${s.effort}`, ...depthPart(s, (d) => `d${d}`)];
   if (s.yuv) parts.push(`yuv${s.yuv}`);
+  if (s.hdrMode && s.hdrMode !== 'gainmap') parts.push(s.hdrMode);
   return parts.join('-');
 }
 
@@ -204,6 +215,7 @@ export async function calibrate({
       const args = codec.buildEncodeArgs({
         input: encodeInput(reference, s.codec),
         hdr: reference.hdr ?? null,
+        hdrMode: s.hdrMode ?? null,
         output,
         quality: midQuality,
         effort: s.effort,
@@ -212,7 +224,7 @@ export async function calibrate({
         qalpha: s.qalpha ?? undefined,
         threads: mode,
       });
-      const { ms } = await exec(encoderFor(codec, reference), args);
+      const { ms } = await exec(encoderFor(codec, reference, s), args);
       model.seed(s.id, mode, ms);
       log(`calibrate ${seriesDisplayName(s)} ${mode}: ${ms.toFixed(0)}ms`);
       await rm(output, { force: true });
@@ -291,10 +303,11 @@ export async function encodePhase({
 
     const encodeTo = (output, threads) =>
       exec(
-        encoderFor(codec, reference),
+        encoderFor(codec, reference, job),
         codec.buildEncodeArgs({
           input: encodeInput(reference, job.codec),
           hdr: reference.hdr ?? null,
+          hdrMode: job.hdrMode ?? null,
           output,
           quality: job.quality,
           effort: job.effort,
@@ -377,6 +390,7 @@ export async function encodePhase({
       effortLabel: codec.effortLabel?.(job.effort) ?? String(job.effort),
       depth: job.depth,
       yuv: job.yuv ?? null,
+      hdrMode: job.hdrMode ?? null,
       qalpha: params.qalpha ?? null,
       bytes,
       bpp: (bytes * 8) / (reference.width * reference.height),
@@ -424,11 +438,14 @@ export async function scorePhase({
       workDir: tempDir,
       keepDecoded: config.keepDecoded,
       hdr: reference.hdr ?? null,
+      hdrMode: entry.job.hdrMode ?? null,
       cvvdp: config.cvvdp ?? null,
     });
 
     Object.assign(entry.result, {
       score: scored.score,
+      // Rows stored before PQ AVIF existed lack it; the job always knows.
+      ...(entry.job.hdrMode ? { hdrMode: entry.job.hdrMode } : {}),
       ...(scored.cvvdp ? { cvvdp: scored.cvvdp } : {}),
       decodeMs: scored.decodeMs,
       scoreMs: scored.scoreMs,
