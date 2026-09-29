@@ -17,6 +17,7 @@ import {
 } from './decode.js';
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
+import { avif } from './codecs/index.js';
 import { INSTALL_HINT, prepareCvvdp, probeCvvdp, toTiff } from './cvvdp.js';
 import { SDR_WHITE_NITS, hasGainMap, isHdrPng, prepareHdrReference } from './hdr.js';
 import { losslessSuite } from './lossless.js';
@@ -151,8 +152,10 @@ async function main(argv) {
             gainmap: 'SDR PNG base + gain map up to the HDR PNG',
             'gainmap-hdr': 'HDR PNG base (PQ) + gain map down to the SDR PNG',
             pq: 'the HDR PNG as PQ',
-          })[mode]).join(';\n           ')}.${config.avif.hdrModes.some((m) => m !== 'pq')
-            ? ' Gain map quality = -q.' : ''}\n` +
+          })[mode]).join(';\n           ')}.${config.avif.hdrModes.includes('gainmap')
+            ? `\n           SDR-base gain map: 10-bit 4:4:4, full size, quality -q${
+              avif.GAIN_MAP_QUALITY_OFFSET < 0 ? avif.GAIN_MAP_QUALITY_OFFSET : `+${avif.GAIN_MAP_QUALITY_OFFSET}`}.`
+            : ''}\n` +
           '     JXL: the HDR PNG as PQ. Scored against the HDR PNG with experimental PU21\n' +
           '     SSIMULACRA2 (fast-ssim2).\n' +
           '     Lossless suite skipped: the two lossless files would not be the same image.\n',

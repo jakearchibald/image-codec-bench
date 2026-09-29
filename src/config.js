@@ -203,7 +203,8 @@ export async function resolveConfig(values, positionals) {
     avifHdrExplicit: Boolean(values['avif-hdr'] ?? fileConfig.avifHdr),
 
     jxl: {
-      quality: parseRange(pick('jxl-quality', 'jxlQuality', rangeSpec(jxl.defaults.quality)), { integer: true }),
+      // cjxl takes a fractional -q (e.g. 17.5); avifenc's -q is integer only.
+      quality: parseRange(pick('jxl-quality', 'jxlQuality', rangeSpec(jxl.defaults.quality))),
       effort: parseRange(pick('jxl-effort', 'jxlEffort', jxl.defaults.effort.join(',')), { integer: true }),
       depth: [8],
     },

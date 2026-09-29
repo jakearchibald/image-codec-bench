@@ -168,7 +168,12 @@ test('HDR avif encode: combine builds the gain-map image from both PNGs', () => 
     depth: 10, yuv: '444', threads: 'single', hdr: HDR,
   });
   assert.deepEqual(args.slice(0, 4), ['combine', 'sdr.png', 'hdr.png', 'o.avif']);
-  assert.equal(args[args.indexOf('--qgain-map') + 1], '55');
+  // Gain-map settings come from the tuned rule, not libavif's defaults.
+  const gm = avif.gainMapSettings(55);
+  assert.equal(args[args.indexOf('--qgain-map') + 1], String(gm.quality));
+  assert.equal(args[args.indexOf('--depth-gain-map') + 1], String(gm.depth));
+  assert.equal(args[args.indexOf('--yuv-gain-map') + 1], gm.yuv);
+  assert.equal(args[args.indexOf('--downscaling') + 1], String(gm.downscaling));
   assert.equal(args[args.indexOf('-d') + 1], '10');
   assert.equal(args[args.indexOf('-j') + 1], '1');
   // --ignore-profile also drops the HDR PNG's cICP, so the alternate's colour
@@ -198,9 +203,9 @@ test('HDR decodes: AVIF gain map rendered in full, JXL straight to 16-bit', () =
   assert.ok(j.args.includes('--bits_per_sample=16'));
 });
 
-test('qgainmap is in the cache key only for HDR AVIF jobs', () => {
+test('gain-map settings are in the cache key only for HDR AVIF jobs', () => {
   const job = { codec: 'avif', quality: 60, effort: 6, depth: 8, yuv: '444', qalpha: 'match' };
-  assert.equal(encodeParams({ ...job, hdr: true }).qgainmap, 60);
+  assert.deepEqual(encodeParams({ ...job, hdr: true }).gainMap, avif.gainMapSettings(60));
   // SDR keys must not change, or every existing cache would be invalidated.
   assert.deepEqual(encodeParams({ ...job, hdr: false }), encodeParams(job));
 });
@@ -276,11 +281,12 @@ test('each AVIF HDR mode is its own series; gain-map ids are unchanged', () => {
   assert.deepEqual(sdr.map((s) => s.hdrMode), [null]);
 });
 
-test('PQ AVIF has its own cache key; gain-map keys are what they were', () => {
+test('PQ AVIF has its own cache key; gainmap and the default mode key the same', () => {
   const job = { codec: 'avif', quality: 60, effort: 6, depth: 10, yuv: '444', qalpha: 'match', hdr: true };
   assert.deepEqual(encodeParams({ ...job, hdrMode: 'gainmap' }), encodeParams(job));
   assert.equal(encodeParams({ ...job, hdrMode: 'pq' }).hdrMode, 'pq');
   assert.equal(encodeParams({ ...job, hdrMode: 'pq' }).qgainmap, undefined);
+  assert.equal(encodeParams({ ...job, hdrMode: 'pq' }).gainMap, undefined);
 });
 
 test('PQ AVIF: avifenc on the HDR PNG, decoded plainly at 16-bit', async () => {
@@ -345,4 +351,11 @@ test('hdrCaveats describe whichever AVIF modes a run used', async () => {
   assert.match(text(['gainmap-hdr']), /never measured/);
   assert.doesNotMatch(text(['gainmap-hdr']), /precision penalty/);
   assert.match(text(['gainmap', 'gainmap-hdr', 'pq']), /3 kinds of AVIF/);
+});
+
+test('gainMapSettings: 10-bit, 4:4:4, full size, quality clamped to 0..100', () => {
+  const gm = avif.gainMapSettings(60);
+  assert.deepEqual({ depth: gm.depth, yuv: gm.yuv, downscaling: gm.downscaling }, { depth: 10, yuv: '444', downscaling: 1 });
+  assert.equal(gm.quality, 60 + avif.GAIN_MAP_QUALITY_OFFSET);
+  assert.equal(avif.gainMapSettings(0).quality, 0);
 });

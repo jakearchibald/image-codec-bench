@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { codecs as codecRegistry } from '../codecs/index.js';
+import { GAIN_MAP_QUALITY_OFFSET } from '../codecs/avif.js';
 
 const TEMPLATE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'template.html');
 
@@ -262,9 +263,19 @@ export function hdrCaveats(hdr, { timed = false, modes = ['gainmap'] } = {}) {
   const hdrBase = modes.includes('gainmap-hdr');
   const pq = modes.includes('pq');
   const gainMap = sdrBase || hdrBase;
-  const gainMapSettings =
-    'the gain map at the same quality as the base (<code>--qgain-map</code> = <code>-q</code>; ' +
-    'the default is 60 whatever <code>-q</code> is), 8-bit, full resolution';
+  const offset = GAIN_MAP_QUALITY_OFFSET;
+  const relative = offset === 0 ? 'the same quality as the base' : `quality ${Math.abs(offset)} ${offset < 0 ? 'below' : 'above'} the base`;
+  const gainMapSettings = [
+    ...(sdrBase
+      ? [`an SDR-base gain map is 10-bit, 4:4:4, full resolution, at ${relative} ` +
+          '(tuned by a sweep for size at equal quality on both metrics; libavif\u2019s defaults ' +
+          'would be 8-bit at quality 60 whatever <code>-q</code> is)']
+      : []),
+    ...(hdrBase
+      ? ['an HDR-base gain map keeps libavif\u2019s defaults at the same quality as the base, ' +
+          'since only the unscored SDR rendition depends on it']
+      : []),
+  ].join('; ');
   const kinds = [
     ...(sdrBase
       ? ['<em>gain map, SDR base</em>: the SDR PNG as the base, plus a gain map libavif computes ' +

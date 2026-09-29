@@ -97,6 +97,27 @@ node src/cli.js neon-hdr.png --sdr neon-sdr.png --no-timing
 
   PQ and HDR-base AVIF want `--avif-depth 10` or 12; the CLI warns at 8, which bands. Both
   decode at 16-bit, so only the SDR-base gain map has the 12-bit scoring penalty.
+- **SDR-base gain maps use tuned settings**: 10-bit, 4:4:4, full resolution, quality 5
+  below the base's `-q` (`gainMapSettings` in [`src/codecs/avif.js`](src/codecs/avif.js)).
+  libavif's defaults are 8-bit at quality 60 whatever `-q` is.
+
+  From a sweep on the neon HDR/SDR pair at `-s 0`, 10-bit base, comparing file size at equal
+  quality on the HDR rendition (BD-rate style) against 8-bit, 4:4:4, full size, quality = `-q`:
+
+  | gain map | PU21 SSIMULACRA2 | ColorVideoVDP |
+  |---|---|---|
+  | **10-bit, 4:4:4, full, `-q` −5** | **−13.1%** | **−4.6%** |
+  | 10-bit, 4:4:4, full, `-q` | −7.1% | −6.0% |
+  | 10-bit, 4:4:4, full, `-q` −10 | −17.1% | +0.8% |
+  | 12-bit, 4:4:4, full, `-q` −5 | −14.5% | +4.0% |
+  | 8-bit, 4:4:4, half size, `-q` | −16.9% | +87.3% |
+  | 8-bit, 4:2:0, full, `-q` | +1.1% | +83.4% |
+  | 8-bit, 4:4:4, full, `-q` +15 | +43.6% | +24.0% |
+
+  4:0:0 (luma-only) gain maps can't carry the colour differences between the renditions and
+  score far below everything else. −5 was the only setting better on both metrics, and it
+  held in every third of the quality range. One image, so treat the rule as a starting
+  point rather than a law.
 - **JXL** encodes the HDR PNG as PQ. Linear-light JXL looked closer to the gain map in
   Chrome but was wrong in Safari, and much of the difference depended on monitor brightness.
 - **Scoring** compares against the HDR PNG at full precision. AVIF gain maps are rendered

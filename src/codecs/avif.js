@@ -75,13 +75,40 @@ export function buildEncodeArgs({
   return args;
 }
 
+/** Gain-map quality relative to the base's -q, for an SDR-base gain map. */
+export const GAIN_MAP_QUALITY_OFFSET = -5;
+
+/**
+ * Gain-map settings for an SDR-base AVIF at base quality `quality`.
+ *
+ * From a sweep on a neon HDR/SDR pair at -s 0, scoring the HDR rendition with
+ * PU21 SSIMULACRA2 and ColorVideoVDP (the README has the numbers):
+ *  - 10-bit beats libavif's default 8-bit on both metrics, at any quality.
+ *  - Full resolution and 4:4:4: downscaling or 4:2:0 saved little or nothing
+ *    on PU21 and cost ColorVideoVDP 40-150% more bytes at equal JOD. 4:0:0
+ *    (luma only) can't carry colour differences between the renditions at all.
+ *  - Quality a little below the base: the two metrics disagree on how far
+ *    (PU21 keeps gaining down to -15; ColorVideoVDP starts losing past -5),
+ *    so this is where neither loses.
+ */
+export function gainMapSettings(quality) {
+  return {
+    quality: Math.max(0, Math.min(100, quality + GAIN_MAP_QUALITY_OFFSET)),
+    depth: 10,
+    yuv: '444',
+    downscaling: 1,
+  };
+}
+
 /**
  * HDR mode: `avifgainmaputil combine` builds the gain-map AVIF from both PNGs.
  * By default the SDR one is the base, with a gain map computed so applying it
- * in full reproduces the HDR one. With `hdrBase` (--avif-hdr gainmap-hdr) it
- * runs the other way: the HDR PNG is the base, as PQ, and the gain map maps
- * down to the SDR one -- the direction JXL's jhgm is meant for. `-d`/`-y`
- * apply to the base; the gain map is libavif's default 8-bit 4:4:4, full size.
+ * in full reproduces the HDR one, configured by `gainMapSettings`. With
+ * `hdrBase` (--avif-hdr gainmap-hdr) it runs the other way: the HDR PNG is the
+ * base, as PQ, and the gain map maps down to the SDR one -- the direction
+ * JXL's jhgm is meant for. That gain map only serves the SDR rendition, which
+ * isn't scored, so it keeps libavif's defaults with quality = -q. `-d`/`-y`
+ * apply to the base.
  */
 function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads, hdr, hdrBase = false }) {
   const { sdr } = hdr;
@@ -92,8 +119,8 @@ function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads,
     'combine',
     ...(hdrBase ? [input.hdr, input.sdr] : [input.sdr, input.hdr]),
     output,
-    // The gain map defaults to q60 whatever -q is, so it tracks -q.
-    '-q', String(quality), '--qgain-map', String(quality),
+    '-q', String(quality),
+    ...gainMapArgs(hdrBase ? { quality } : gainMapSettings(quality)),
     '-y', yuv, '-d', String(depth),
     '-s', String(effort),
     '-j', threads === 'single' ? '1' : 'all',
@@ -105,6 +132,16 @@ function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads,
     '--cicp-base', hdrBase ? hdrCicp : sdrCicp,
     '--cicp-alternate', hdrBase ? `${sdr.primaries}/${sdr.transfer}/0` : hdrCicp,
     '--ignore-exif', '--ignore-xmp',
+  ];
+}
+
+/** combine's gain-map flags. Unset fields keep libavif's defaults. */
+function gainMapArgs({ quality, depth, yuv, downscaling }) {
+  return [
+    '--qgain-map', String(quality),
+    ...(depth ? ['--depth-gain-map', String(depth)] : []),
+    ...(yuv ? ['--yuv-gain-map', yuv] : []),
+    ...(downscaling ? ['--downscaling', String(downscaling)] : []),
   ];
 }
 

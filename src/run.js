@@ -51,12 +51,15 @@ export function encodeParams(job) {
     params.yuv = job.yuv;
     params.qalpha = job.qalpha === 'match' ? job.quality : Number(job.qalpha);
     // Only present in HDR mode, so SDR cache keys are unchanged.
-    // HDR runs only, so SDR cache keys are unchanged. Other modes get their
-    // own field; SDR-base gain-map jobs keep exactly the key they had before
-    // the other modes existed.
+    // HDR runs only, so SDR cache keys are unchanged. Modes other than the
+    // default SDR-base gain map get their own field.
     if (job.hdr) {
       if (job.hdrMode && job.hdrMode !== 'gainmap') params.hdrMode = job.hdrMode;
-      if (job.hdrMode !== 'pq') params.qgainmap = job.quality;
+      // An SDR-base gain map's settings follow a rule (avif.gainMapSettings),
+      // so the key carries the settings themselves: change the rule and the
+      // jobs re-encode rather than silently reusing files made the old way.
+      if (job.hdrMode === 'gainmap-hdr') params.qgainmap = job.quality;
+      else if (job.hdrMode !== 'pq') params.gainMap = getCodec('avif').gainMapSettings(job.quality);
     }
   }
   return params;

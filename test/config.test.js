@@ -204,3 +204,9 @@ test('--avif-yuv still rejects an unknown mode inside a list', async () => {
 test('--avif-yuv rejects an empty list', async () => {
   await assert.rejects(resolve(['p.png', '--avif-yuv', ',']), /at least one mode/);
 });
+
+test('--jxl-quality keeps fractional values; cjxl -q accepts them', async () => {
+  const { resolveConfig } = await import('../src/config.js');
+  const config = await resolveConfig({ 'jxl-quality': '17.5:25.5:4' }, ['x.png']);
+  assert.deepEqual(config.jxl.quality, [17.5, 21.5, 25.5]);
+});
