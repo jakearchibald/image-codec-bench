@@ -2,3 +2,4 @@ node_modules/
 out/
 tools/hdr-ssim2/target/
 tools/cvvdp/.venv/
+inputs/
