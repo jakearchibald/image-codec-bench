@@ -18,13 +18,14 @@ test('display model: SDR is standard_4k in sRGB', () => {
   assert.equal(model.max_luminance, 200);
 });
 
-test('display model: HDR is standard_hdr_pq in the reference’s own primaries', () => {
+test('display model: HDR is standard_hdr_pq at office light levels, in the reference’s own primaries', () => {
   // cvvdp ignores the files' colour tags, so the display must match the image.
   assert.equal(displayModel({ primaries: 9 }).model.colorspace, 'bench-BT.2020-PQ');
   assert.equal(displayModel({ primaries: 12 }).model.colorspace, 'bench-P3-PQ');
   assert.equal(displayModel({ primaries: 1 }).model.colorspace, 'bench-BT.709-PQ');
   assert.notEqual(displayModel({ primaries: 9 }).id, displayModel({ primaries: 12 }).id);
   assert.equal(displayModel({ primaries: 9 }).model.max_luminance, 1500);
+  assert.equal(displayModel({ primaries: 9 }).model.E_ambient, displayModel(null).model.E_ambient);
 });
 
 const cvvdp = { id: '0.5.7|standard_4k' };
@@ -33,7 +34,7 @@ const scored = { score: 70, cvvdp: { jod: 9.8, id: '0.5.7|standard_4k' } };
 test('isCurrent: only a JOD from the same version and display counts', () => {
   assert.ok(isCurrent(scored.cvvdp, cvvdp));
   assert.ok(!isCurrent({ jod: 9.8, id: '0.5.6|standard_4k' }, cvvdp));
-  assert.ok(!isCurrent({ jod: 9.8, id: '0.5.7|standard_hdr_pq-9' }, cvvdp));
+  assert.ok(!isCurrent({ jod: 9.8, id: '0.5.7|hdr_pq_office-9' }, cvvdp));
   assert.ok(!isCurrent(undefined, cvvdp));
 });
 

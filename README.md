@@ -74,8 +74,12 @@ tools/cvvdp/.venv/bin/pip install -r tools/cvvdp/requirements.txt
 ```
 
 - **The display model decides the scores.** SDR runs assume cvvdp's `standard_4k` (30" 4K,
-  200 cd/m², office lighting, 2× display height away); HDR runs `standard_hdr_pq` (1500 cd/m²,
-  10 lux). At that distance fine artefacts are hard to see, so scores cluster near 10.
+  200 cd/m², 250 lux office lighting, 2× display height ≈ 75 cm away: about 75 pixels per
+  degree, between a 27" 1440p monitor and a Retina laptop). HDR runs assume cvvdp's
+  `standard_hdr_pq` monitor (1500 cd/m² peak) in the same 250 lux rather than the preset's
+  10 lux, which is a dark grading room and overweights shadow artefacts for a desk.
+- cvvdp clips PQ at the display's peak, so differences in highlights brighter than 1500
+  cd/m² don't count.
 - cvvdp ignores the files' colour tags and reads pixels in the display's colour space, so
   each run writes its own display definition matching the reference (e.g. P3 PQ).
 - It runs one file at a time, about 5 seconds each at 5 MP, alongside the normal scoring.

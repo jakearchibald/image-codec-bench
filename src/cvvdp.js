@@ -75,10 +75,12 @@ const COLOUR_SPACES = {
 const PQ_COLOUR_SPACE = { 1: 'bench-BT.709-PQ', 12: 'bench-P3-PQ', 9: 'bench-BT.2020-PQ' };
 
 /**
- * The display the scores assume: cvvdp's own `standard_4k` for SDR and
- * `standard_hdr_pq` for HDR, with the colour space set to match the
- * reference. The viewing conditions decide how visible artefacts are, so the
- * description is carried into the results and the report.
+ * The display the scores assume: cvvdp's own `standard_4k` for SDR, and for
+ * HDR its `standard_hdr_pq` monitor in the same office lighting as SDR (the
+ * preset's 10 lux is a dark grading room, which overstates shadow artefacts
+ * for a desk or laptop). The colour space is set to match the reference. The
+ * viewing conditions decide how visible artefacts are, so the description is
+ * carried into the results and the report.
  */
 export function displayModel(hdr) {
   const common = {
@@ -89,16 +91,16 @@ export function displayModel(hdr) {
   };
   if (hdr) {
     return {
-      id: `standard_hdr_pq-${hdr.primaries}`,
+      id: `hdr_pq_office-${hdr.primaries}`,
       model: {
         ...common,
         name:
-          '30-inch 4K HDR monitor, peak luminance 1500 cd/m^2, viewed under low light levels ' +
-          '(10 lux), seen from 2 x display height (cvvdp standard_hdr_pq)',
+          '30-inch 4K HDR monitor, peak luminance 1500 cd/m^2, viewed under office light levels ' +
+          '(250 lux), seen from 2 x display height (cvvdp standard_hdr_pq, but at 250 lux)',
         colorspace: PQ_COLOUR_SPACE[hdr.primaries],
         max_luminance: 1500,
         contrast: 1000000,
-        E_ambient: 10,
+        E_ambient: 250,
       },
     };
   }

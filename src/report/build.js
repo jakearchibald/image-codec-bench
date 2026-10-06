@@ -399,8 +399,8 @@ export function cvvdpCaveats(cvvdp) {
       'SSIMULACRA2\u2019s.',
     `<strong>ColorVideoVDP scores assume a specific display:</strong> ${escapeHtml(cvvdp.displayName)}. ` +
       'Viewing conditions decide how visible artefacts are, so the whole curve depends on this ' +
-      'choice. At this distance fine artefacts are hard to see, which is why scores cluster ' +
-      'close to 10; the differences between curves are still meaningful.',
+      'choice. Scores often cluster close to 10; the differences between curves are still ' +
+      'meaningful.',
   ];
 }
 
