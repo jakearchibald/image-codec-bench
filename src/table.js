@@ -74,6 +74,24 @@ const COLUMNS = [
     align: 'right',
     format: (v) => formatMs(v),
   },
+  // Peak encoder memory. Optional, so results from before it was recorded --
+  // or a platform without /usr/bin/time -- don't grow an all-empty column.
+  {
+    key: 'peakMemory.single',
+    header: 'single mem',
+    align: 'right',
+    format: (v) => formatMemory(v),
+    csvHeader: 'single_peak_bytes',
+    optional: true,
+  },
+  {
+    key: 'peakMemory.multi',
+    header: 'multi mem',
+    align: 'right',
+    format: (v) => formatMemory(v),
+    csvHeader: 'multi_peak_bytes',
+    optional: true,
+  },
 ];
 
 /**
@@ -104,6 +122,11 @@ function formatMs(ms) {
   // whole ms throws away most of the difference between codecs.
   if (ms < 10) return `${ms.toFixed(1)}ms`;
   return `${ms.toFixed(0)}ms`;
+}
+
+function formatMemory(bytes) {
+  if (bytes == null) return '--';
+  return `${(bytes / 1048576).toFixed(0)}MB`;
 }
 
 function get(object, dottedKey) {
@@ -212,11 +235,18 @@ function csvCell(value) {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+/** Threading modes with a peak-memory figure on at least one row. */
+function memoryModesIn(rows) {
+  return ['single', 'multi'].filter((mode) => rows.some((row) => row.peakMemory?.[mode] != null));
+}
+
 /** Lossless table as CSV, kept separate since its columns differ. */
 export function losslessToCsv(rows, timingModes = ['single', 'multi']) {
   const browsers = decodeBrowsersIn(rows);
+  const memoryModes = memoryModesIn(rows);
   const header = ['config', 'codec', 'bytes', 'bpp', 'ssimulacra2', 'bit_exact'];
   for (const mode of timingModes) header.push(`${mode}_best_ms`);
+  for (const mode of memoryModes) header.push(`${mode}_peak_bytes`);
   for (const name of browsers) {
     header.push(`decode_${name}_mean_ms`, `decode_${name}_sd_ms`, `decode_${name}_runs`);
   }
@@ -234,6 +264,7 @@ export function losslessToCsv(rows, timingModes = ['single', 'multi']) {
       for (const mode of timingModes) {
         cells.push(row.timings?.[mode] ? String(row.timings[mode].bestMs) : '');
       }
+      for (const mode of memoryModes) cells.push(csvCell(row.peakMemory?.[mode]));
       for (const name of browsers) {
         const measured = row.decode?.[name];
         cells.push(measured?.meanMs == null ? '' : String(measured.meanMs));
@@ -247,8 +278,10 @@ export function losslessToCsv(rows, timingModes = ['single', 'multi']) {
 
 export function formatLosslessTable(rows, timingModes = ['single', 'multi']) {
   const browsers = decodeBrowsersIn(rows);
+  const memoryModes = memoryModesIn(rows);
   const header = ['Config', 'Bytes'];
   for (const mode of timingModes) header.push(mode === 'multi' ? 'Multi' : 'Single');
+  for (const mode of memoryModes) header.push(mode === 'multi' ? 'Multi mem' : 'Single mem');
   for (const name of browsers) header.push(`dec ${name}`);
   header.push('SSIMULACRA2', 'Bit-exact');
 
@@ -258,6 +291,7 @@ export function formatLosslessTable(rows, timingModes = ['single', 'multi']) {
         row.label ?? row.codec,
         'skipped',
         ...timingModes.map(() => '--'),
+        ...memoryModes.map(() => '--'),
         ...browsers.map(() => '--'),
         '--',
         '--',
@@ -267,6 +301,7 @@ export function formatLosslessTable(rows, timingModes = ['single', 'multi']) {
     for (const mode of timingModes) {
       cells.push(row.timings?.[mode] ? formatMs(row.timings[mode].bestMs) : '--');
     }
+    for (const mode of memoryModes) cells.push(formatMemory(row.peakMemory?.[mode]));
     for (const name of browsers) cells.push(formatMs(row.decode?.[name]?.meanMs));
     cells.push(row.score == null ? '--' : row.score.toFixed(2));
     cells.push(row.bitExact == null ? '--' : row.bitExact ? 'yes' : 'NO');

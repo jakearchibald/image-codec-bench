@@ -460,6 +460,16 @@ export function buildCaveats({ run, results, lossless = [] }) {
       'happens against measured SSIMULACRA2 on the x-axis.',
   ];
 
+  if ([...results, ...lossless].some((r) => Object.keys(r.peakMemory ?? {}).length > 0)) {
+    caveats.push(
+      '<strong>Encode memory is the encoder process\u2019s peak resident set size</strong>, as ' +
+        'reported by <code>/usr/bin/time</code> \u2014 the worst of all runs in a threading mode. ' +
+        'It includes the binary and its shared libraries (a few MB that are the same for every ' +
+        'encode), and it is resident memory, not allocations: under memory pressure the OS can ' +
+        'page some out, which would lower the figure.',
+    );
+  }
+
   if (run.hdr) {
     caveats.unshift(...hdrCaveats(run.hdr, {
       timed: run.config.timing.length > 0,
@@ -574,6 +584,7 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
       score: r.score,
       cvvdp: r.cvvdp?.jod ?? null,
       timings: r.timings,
+      peakMemory: r.peakMemory ?? null,
       decode: r.decode ?? null,
       bitstream: r.bitstream,
     })),

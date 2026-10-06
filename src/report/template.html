@@ -371,6 +371,16 @@
         </p>
       </div>
 
+      <section id="memory-section" hidden>
+        <h2>Chart 2b — encode memory</h2>
+        <p>
+          x = SSIMULACRA2, y = peak resident memory of the encoder process
+          (worst of N). Same series as above.
+        </p>
+        <div class="controls" id="memory-controls"></div>
+        <div class="chart-wrap"><canvas id="chart-memory"></canvas></div>
+      </section>
+
       <section id="decode-section" hidden>
         <h2>Chart 3 — decode cost</h2>
         <p>
@@ -432,6 +442,17 @@
         <p class="hint" id="lossless-size-note"></p>
         <div class="controls" id="lossless-size-controls"></div>
         <div class="chart-wrap"><canvas id="chart-lossless-size"></canvas></div>
+      </section>
+
+      <section id="lossless-memory-section" hidden>
+        <h3>Chart 4b — lossless size vs encode memory</h3>
+        <p>
+          y = file size, x = peak resident memory of the encoder process. Same
+          axes as Chart&nbsp;4 with memory substituted for time.
+          <strong>Down and to the left is better.</strong>
+        </p>
+        <div class="controls" id="lossless-memory-controls"></div>
+        <div class="chart-wrap"><canvas id="chart-lossless-memory"></canvas></div>
       </section>
 
       <section id="lossless-decode-section" hidden>
@@ -519,6 +540,8 @@
           : b < 1048576
             ? `${(b / 1024).toFixed(1)} KB`
             : `${(b / 1048576).toFixed(2)} MB`;
+      const MIB = 1048576;
+      const fmtMem = (b) => (b == null ? "—" : `${(b / MIB).toFixed(0)} MB`);
       const fmtMs = (ms) =>
         ms == null
           ? "—"
@@ -720,6 +743,9 @@
                 `${mode}: ${fmtMs(t.bestMs)} best / ${fmtMs(t.meanMs)} mean (${t.runs} run${t.runs > 1 ? "s" : ""})`,
               );
           }
+          for (const [mode, bytes] of Object.entries(r.peakMemory ?? {})) {
+            lines.push(`${mode} memory: ${fmtMem(bytes)} peak`);
+          }
           return lines;
         },
       };
@@ -889,6 +915,70 @@
         syncCharts = refreshCost;
       }
 
+      /* ---------------------------------------------------- chart 2b: encode memory */
+      // Measured on every encode, including the canonical one, so it exists
+      // even under --timing none. Results from before memory was recorded have
+      // none, and the chart is skipped if nothing does.
+      const memoryModes = ["multi", "single"].filter((mode) =>
+        results.some((r) => r.peakMemory?.[mode] != null),
+      );
+      if (memoryModes.length > 0) {
+        document.getElementById("memory-section").hidden = false;
+        const memoryControls = document.getElementById("memory-controls");
+        memoryControls.innerHTML =
+          (memoryModes.length > 1
+            ? "<span>Threading:</span>" +
+              memoryModes
+                .map(
+                  (mode, i) =>
+                    `<label class="inline"><input type="radio" name="memory-mode" value="${mode}"${i === 0 ? " checked" : ""}> ` +
+                    `${mode === "single" ? "single thread" : "all cores"}</label>`,
+                )
+                .join("")
+            : "") +
+          '<label class="inline"><input type="checkbox" id="memory-log"> log-scale y</label>';
+
+        const memoryPick = (mode) => (r) =>
+          r.peakMemory?.[mode] == null ? null : r.peakMemory[mode] / MIB;
+        const memoryChart = new Chart(document.getElementById("chart-memory"), {
+          type: "scatter",
+          data: { datasets: datasetsFor(memoryPick(memoryModes[0])) },
+          options: {
+            ...baseOptions(),
+            scales: {
+              ...baseOptions().scales,
+              y: {
+                title: { display: true, text: "peak encoder memory (MB, worst of N)" },
+                type: "linear",
+                // From zero, so the gap between two series reads as a ratio.
+                beginAtZero: true,
+              },
+            },
+          },
+        });
+
+        function refreshMemory() {
+          // From the DOM, for the same restored-radio reason as refreshCost.
+          const mode =
+            memoryControls.querySelector('input[name="memory-mode"]:checked')
+              ?.value ?? memoryModes[0];
+          memoryChart.data.datasets = datasetsFor(memoryPick(mode));
+          memoryChart.options.scales.y.type = document.getElementById("memory-log")
+            .checked
+            ? "logarithmic"
+            : "linear";
+          memoryChart.update();
+        }
+        for (const input of memoryControls.querySelectorAll("input")) {
+          input.addEventListener("change", refreshMemory);
+        }
+        const previousMemorySync = syncCharts;
+        syncCharts = () => {
+          previousMemorySync();
+          refreshMemory();
+        };
+      }
+
       /* ----------------------------------------------------- chart 3: decode cost */
       // Only drawn when something measured it: the phase can be skipped or a
       // browser absent, and an empty chart reads as "decode is free".
@@ -1032,6 +1122,9 @@
                   const t = row.timings?.[mode];
                   if (t) lines.push(`encode ${mode}: ${fmtMs(t.bestMs)}`);
                 }
+                for (const [mode, bytes] of Object.entries(row.peakMemory ?? {})) {
+                  lines.push(`memory ${mode}: ${fmtMem(bytes)} peak`);
+                }
                 for (const [name, m] of Object.entries(row.decode ?? {})) {
                   if (m?.meanMs != null) lines.push(`decode ${name}: ${fmtMs(m.meanMs)}`);
                 }
@@ -1102,6 +1195,64 @@
         syncCharts = () => {
           previousSizeSync();
           refreshLosslessSize();
+        };
+      }
+
+      // Chart 4b: size vs encode memory. Not gated on timing: the canonical
+      // encode records memory even under --timing none.
+      const losslessMemoryModes = ["multi", "single"].filter((mode) =>
+        losslessPoints.some((row) => row.peakMemory?.[mode] != null),
+      );
+      if (losslessMemoryModes.length > 0) {
+        document.getElementById("lossless-memory-section").hidden = false;
+        const losslessMemoryControls = document.getElementById("lossless-memory-controls");
+        losslessMemoryControls.innerHTML =
+          (losslessMemoryModes.length > 1
+            ? "<span>Threading:</span>" +
+              losslessMemoryModes
+                .map(
+                  (mode, i) =>
+                    `<label class="inline"><input type="radio" name="lossless-memory-mode" value="${mode}"${i === 0 ? " checked" : ""}> ` +
+                    `${mode === "single" ? "single thread" : "all cores"}</label>`,
+                )
+                .join("")
+            : "") +
+          '<label class="inline"><input type="checkbox" id="lossless-memory-log"> log-scale x</label>';
+
+        const losslessMemoryPick = (mode) => (row) =>
+          row.peakMemory?.[mode] == null ? null : row.peakMemory[mode] / MIB;
+        const memoryOptions = losslessOptions("peak encoder memory (MB)");
+        // Linear from zero by default, as in Chart 2b, so the gap between two
+        // codecs reads as a ratio.
+        memoryOptions.scales.x = { ...memoryOptions.scales.x, type: "linear", beginAtZero: true };
+        const losslessMemoryChart = new Chart(
+          document.getElementById("chart-lossless-memory"),
+          {
+            type: "scatter",
+            data: { datasets: losslessDatasets(losslessMemoryPick(losslessMemoryModes[0])) },
+            options: memoryOptions,
+          },
+        );
+
+        function refreshLosslessMemory() {
+          const mode =
+            losslessMemoryControls.querySelector('input[name="lossless-memory-mode"]:checked')
+              ?.value ?? losslessMemoryModes[0];
+          losslessMemoryChart.data.datasets = losslessDatasets(losslessMemoryPick(mode));
+          losslessMemoryChart.options.scales.x.type = document.getElementById(
+            "lossless-memory-log",
+          ).checked
+            ? "logarithmic"
+            : "linear";
+          losslessMemoryChart.update();
+        }
+        for (const input of losslessMemoryControls.querySelectorAll("input")) {
+          input.addEventListener("change", refreshLosslessMemory);
+        }
+        const previousLosslessMemorySync = syncCharts;
+        syncCharts = () => {
+          previousLosslessMemorySync();
+          refreshLosslessMemory();
         };
       }
 
@@ -1201,6 +1352,7 @@
           metric,
           ...(hasCvvdp ? ["ColorVideoVDP (JOD)"] : []),
           ...modes.flatMap((m) => [`${m} best`, `${m} mean`]),
+          ...memoryModes.map((m) => `${m} memory`),
         ];
         const sorted = [...results].sort(
           (a, b) =>
@@ -1226,6 +1378,7 @@
             fmtMs(r.timings[m]?.bestMs),
             fmtMs(r.timings[m]?.meanMs),
           ]),
+          ...memoryModes.map((m) => fmtMem(r.peakMemory?.[m])),
         ]);
         document.getElementById("results-table").innerHTML =
           `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>` +
@@ -1255,6 +1408,7 @@
           "Bytes",
           "bpp",
           ...modes.map((m) => (m === "multi" ? "Multi" : "Single")),
+          ...losslessMemoryModes.map((m) => `${m === "multi" ? "Multi" : "Single"} memory`),
           ...losslessBrowsers.map((name) => `dec ${name}`),
           "SSIMULACRA2",
           "Bit-exact",
@@ -1266,6 +1420,7 @@
               "skipped",
               "—",
               ...modes.map(() => "—"),
+              ...losslessMemoryModes.map(() => "—"),
               ...losslessBrowsers.map(() => "—"),
               "—",
               "—",
@@ -1275,6 +1430,7 @@
             row.bytes.toLocaleString(),
             row.bpp?.toFixed(4) ?? "—",
             ...modes.map((m) => fmtMs(row.timings?.[m]?.bestMs)),
+            ...losslessMemoryModes.map((m) => fmtMem(row.peakMemory?.[m])),
             ...losslessBrowsers.map((name) => fmtMs(row.decode?.[name]?.meanMs)),
             row.score == null ? "—" : row.score.toFixed(2),
             row.bitExact == null ? "—" : row.bitExact ? "yes" : "NO",

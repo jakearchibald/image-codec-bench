@@ -46,6 +46,18 @@ Runs are **resumable**: results are keyed by a hash of (reference bytes, encode 
 tool versions), so re-running skips completed jobs and Ctrl-C is safe at any point. Use
 `--force` to ignore the cache.
 
+### Encode memory
+
+Every encode runs under `/usr/bin/time` (`-l` on macOS, `-v` on Linux), which reports the
+encoder's peak resident set size. The report plots it against SSIMULACRA2 as its own chart,
+per threading mode, and the table and CSV gain `single_peak_bytes`/`multi_peak_bytes`.
+The lossless suite records it too, with a size-vs-memory chart alongside size-vs-time.
+It's recorded even with `--no-timing`, since the one canonical encode is measured too.
+Where the worst of several timing runs differs, the worst is kept.
+
+Results cached from before memory was recorded have none, and resuming won't re-encode
+just to get it. Use `--force` (or a fresh `--out`) to measure it for an existing run.
+
 ### Second metric: ColorVideoVDP (`--cvvdp`)
 
 `--cvvdp` also scores every file with [ColorVideoVDP](https://github.com/gfxdisp/ColorVideoVDP),

@@ -147,16 +147,23 @@ export async function losslessSuite({
             lossless: true,
             threads,
           }),
+          // Same wrapper on every encode, as in the lossy sweep, so the
+          // timings stay comparable with each other.
+          { measureMemory: true },
         );
 
       // Canonical encode, exactly as in the lossy sweep: `avifenc --lossless`
       // is also thread-dependent (353,489 vs 353,496 bytes measured), so the
       // timing sweep must not be able to replace the file we report.
       const canonical = await encodeTo(output, CANONICAL_THREADS);
+      // Peak resident memory per threading mode, as in the lossy sweep. The
+      // canonical encode always provides one, even under --timing none.
+      const peakMemory = {};
+      if (canonical.peakBytes != null) peakMemory[CANONICAL_THREADS] = canonical.peakBytes;
       for (const mode of config.timing) {
-        const ms = mode === CANONICAL_THREADS
-          ? canonical.ms
-          : (await encodeTo(scratch, mode)).ms;
+        const measured = mode === CANONICAL_THREADS ? canonical : await encodeTo(scratch, mode);
+        const { ms } = measured;
+        if (measured.peakBytes != null) peakMemory[mode] = measured.peakBytes;
         timings[mode] = { bestMs: ms, meanMs: ms, runs: 1, canonical: mode === CANONICAL_THREADS };
       }
       await rm(scratch, { force: true });
@@ -208,6 +215,7 @@ export async function losslessSuite({
         score: scored.score,
         bitExact,
         timings,
+        peakMemory,
         bitstream: path.relative(path.dirname(assetsDir), output),
         skipped: false,
       });

@@ -302,6 +302,17 @@ export async function encodePhase({
       ].join(' ');
 
     const timings = {};
+    // Peak resident memory per threading mode, in bytes. Its own field rather
+    // than part of `timings` because the canonical encode measures it even
+    // under --timing none.
+    const peakMemory = {};
+    const notePeak = (mode, peakBytes) => {
+      if (peakBytes == null) return;
+      // Worst case across runs: memory is barely affected by machine load, so
+      // unlike time there is no one-sided noise to take the minimum of, and
+      // the worst case is what a user has to provision for.
+      peakMemory[mode] = Math.max(peakMemory[mode] ?? 0, peakBytes);
+    };
     const scratch = path.join(tempDir, `${bitstreamName(job)}.timing`);
 
     const encodeTo = (output, threads) =>
@@ -319,12 +330,16 @@ export async function encodePhase({
           qalpha: job.qalpha ?? undefined,
           threads,
         }),
+        // Every encode, not just the canonical one, so all timings carry the
+        // same wrapper overhead.
+        { measureMemory: true },
       );
 
     // The canonical encode. This one file is what gets sized and scored, and
     // it is always CANONICAL_THREADS regardless of --timing (see above).
     progress?.setCurrent(`${label}  (encode)`);
     const canonical = await encodeTo(bitstream, CANONICAL_THREADS);
+    notePeak(CANONICAL_THREADS, canonical.peakBytes);
 
     if (config.timing.length === 0) {
       // Quality-only run: the canonical encode is the whole job. This is the
@@ -357,7 +372,8 @@ export async function encodePhase({
           progress?.setCurrent(`${label}  (${mode}, run ${samples.length + 1}/${config.repeats})`);
           // Scratch output: a timing run must never be able to replace the
           // artefact, because for AVIF it would not be the same bytes.
-          const { ms } = await encodeTo(scratch, mode);
+          const { ms, peakBytes } = await encodeTo(scratch, mode);
+          notePeak(mode, peakBytes);
           samples.push(ms);
           cumulative += ms;
           model.observe(job.seriesId, mode, ms);
@@ -401,6 +417,7 @@ export async function encodePhase({
       // Merge rather than replace: a later `--timing single` run should add to
       // the multi figures a previous run measured, not discard them.
       timings: { ...(cached?.timings ?? {}), ...timings },
+      peakMemory: { ...(cached?.peakMemory ?? {}), ...peakMemory },
       lossless: false,
     };
     if (cached?.score !== undefined) result.score = cached.score;
