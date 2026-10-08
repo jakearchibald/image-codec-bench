@@ -152,7 +152,7 @@ function depthPart(job, format) {
   return getCodec(job.codec).hasDepthAxis ? [format(job.depth)] : [];
 }
 
-function bitstreamName(job) {
+export function bitstreamName(job) {
   const parts = [job.codec, `q${job.quality}`, `e${job.effort}`, ...depthPart(job, (d) => `d${d}`)];
   if (job.codec === 'avif') parts.push(`yuv${job.yuv}`);
   if (job.hdrMode && job.hdrMode !== 'gainmap') parts.push(job.hdrMode);

@@ -162,6 +162,52 @@ Requirements and limits:
 - No lossless suite, and no `--max-pixels`: downscale both PNGs first.
 - Gain-map JPEGs are refused rather than run as SDR; export the two PNGs instead.
 
+### Encoding to target scores (`src/target.js`)
+
+A separate tool for when you want files rather than curves: for each codec setting it
+searches for the lowest quality that reaches each target SSIMULACRA2 score, and keeps
+that file.
+
+```sh
+node src/target.js photo.png --target 60,70,80,90 --avif-yuv 420,444 --avif-speed 0,6 --jxl-effort 7,9
+```
+
+Files go in `out/<image-stem>-targets/`, named like the bench's bitstreams plus the score
+the file actually got, e.g. `avif-q28-e0-d8-yuv420-ssimu70.2.avif`, alongside a
+`targets.json` summary. It uses the same normalisation, encoder flags and scoring as the
+bench, so the scores match a bench run at the same settings.
+
+- AVIF searches integer `-q`; JXL searches `-q` in steps of `--jxl-step` (default 0.1).
+- The search interpolates between scores it has already measured, and those are shared
+  across targets, so each target after the first usually costs two or three encodes.
+- It assumes the score rises with quality. That is close to true, so a file always
+  reaches its target but may occasionally be a step above the lowest quality that would.
+- A target the setting can't reach even at `-q 100` is reported, not written.
+- SDR only, no caching between runs. `node src/target.js --help` lists every flag.
+
+### Score variation at a fixed quality (`src/fixed-quality.js`)
+
+Shows how much the SSIMULACRA2 score moves when only effort/speed or AVIF subsampling
+changes. Every image in a directory is encoded at one quality per codec, at each effort
+level and yuv mode, and each file is scored.
+
+```sh
+node src/fixed-quality.js inputs --avif-quality 60 --avif-speed 0-10 --avif-yuv 420,444 \
+  --jxl-quality 75 --jxl-effort 1-10
+```
+
+Results go to `out/<dir-name>-fixed-quality.json`: for each image, every setting's score
+and size, plus a `spread` per codec × depth × yuv giving the lowest and highest scoring
+effort and the range between them. The JSON is rewritten after each image, so an
+interrupted run keeps the images it finished. The console prints the same thing as a
+table per codec, one column per effort.
+
+- Same normalisation, encoder flags and scoring as the bench, so scores match a bench run.
+- The encoded files aren't kept, and nothing is timed, so `--concurrency` is safe to raise.
+- HDR images in the directory are skipped. `--max-pixels` applies to every image.
+- The defaults include `avifenc -s 0` and `cjxl -e 10`, which are very slow on large
+  images; narrow `--avif-speed`/`--jxl-effort` or use `--max-pixels` for a quick look.
+
 ## Output
 
 Written to `out/<image-stem>-<hash8>/`:

@@ -7,6 +7,8 @@
   "bin": { "image-codec-bench": "./src/cli.js" },
   "scripts": {
     "bench": "node src/cli.js",
+    "target": "node src/target.js",
+    "fixed-quality": "node src/fixed-quality.js",
     "test": "node --test \"test/*.test.js\""
   },
   "engines": { "node": ">=22" }
