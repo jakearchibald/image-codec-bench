@@ -10,6 +10,7 @@
     "target": "node src/target.js",
     "fixed-quality": "node src/fixed-quality.js",
     "jpeg-transcode": "node src/jpeg-transcode.js",
+    "progressive": "node src/progressive.js",
     "test": "node --test \"test/*.test.js\""
   },
   "engines": { "node": ">=22" }

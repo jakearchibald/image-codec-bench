@@ -281,6 +281,79 @@ several inputs), e.g. `w1200-q80-p2.jpg` and the kept `w1200-q80-p2-e5.jxl`, alo
 `results.csv`. Each run replaces the previous files for that image. No caching, and no
 scoring: the JXL holds the JPEG's own DCT coefficients.
 
+### Progressive overhead (`src/progressive.js`)
+
+What progressive encoding costs against the same image encoded non-progressively: file
+size, encode time and peak memory, browser decode time, and SSIMULACRA2 of the final image.
+
+```sh
+node src/progressive.js inputs/f1-large.jpg --preview inputs/f1-preview-frame.avif
+```
+
+Files come in groups, one per `--jxl-effort` and one per `--avif-speed` (each takes a
+range or comma list, e.g. `--jxl-effort 5,7 --avif-speed 4-8`). Progressive files are
+compared with the non-progressive file of the same effort or speed. Each group holds:
+
+- **JXL** at `--jxl-quality` (default 70), and the same with `-p` (progressive AC, plus
+  extra DC passes). Non-progressive JXL is still DC-first, so this measures what `-p` adds.
+- **AVIF** at `--avif-quality` (default 50), and a two-layer AVIF (`avifenc --layered`):
+  `--preview` as layer 0 at `--scaling-mode 1/8`, then the full image as layer 1, both at
+  `--avif-quality` unless `--avif-preview-quality` is given. AV1 spatial layers all have
+  the image's dimensions and the encoder does the downscaling, so the preview is first
+  Lanczos-upscaled to the image's size (an AVIF preview is decoded with `avifdec`, since
+  ImageMagick may not read AVIF). A 662×427 preview of a 5301×3423 image is coded at
+  663×428, so it's barely resampled.
+- **With `--avif-keyframe-variant`**, a fifth file: the same two-layer AVIF with `-k 1`,
+  which makes layer 1 a keyframe rather than an inter frame predicted from layer 0. avifenc
+  only documents `-k` for image sequences, so the run reads the frame types out of the
+  bitstream (kept as `frames` in `results.json`) and fails if layer 1 isn't a keyframe. On
+  f1-large at SSIMULACRA2 80, predicting from the preview cost bytes rather than saving
+  them: +8.5% against the non-progressive AVIF, where the keyframe version was −3.4%.
+
+**Each pair is compared at equal final quality.** Qualities are searched with the same
+search as `target.js`, for the SSIMULACRA2 closest to a target: cjxl in steps of
+`--jxl-step` (0.1), avifenc in whole steps, so AVIF can land a few tenths off. Each search
+starts from the `-q` options and took 4–7 encodes on f1-large.
+
+- `--target S` (or `--jxl-target`/`--avif-target`) searches the non-progressive file to
+  S, then the progressive one to the score it reached:
+
+  ```sh
+  node src/progressive.js inputs/f1-large.jpg --preview inputs/f1-preview-frame.avif -t 80
+  ```
+
+- Without a target, the non-progressive file is encoded at its `-q`, and the progressive
+  one is searched to its score.
+- `--no-match` encodes every file at the `-q` options. That changes the answer a lot: on
+  f1-large, JXL `-p` at the same `-q 70` was 4.8% *bigger* but scored 1.7 higher; matched
+  (`-q 64.5`) it's 6.8% *smaller*.
+
+The layered AVIF's layer 0 stays at `--avif-preview-quality` (default `--avif-quality`)
+throughout; only layer 1 is searched. Every file's `quality` (plus `previewQuality` for the
+layered AVIF) is in `results.json`, with a `search` record of the target, the score
+reached and every quality tried.
+
+Notes:
+
+- **Encode timing** is round-robin across all the files, `--repeats` rounds (default 5)
+  per `--threads` mode (default `single,multi`), after one discarded warm-up round, so
+  drift lands evenly. Best of N is the headline; median, mean and samples are in the JSON.
+  Peak memory is the worst seen, from `/usr/bin/time`, as in the bench.
+- **Decode timing** is the same `createImageBitmap` harness as the bench, in every browser
+  that can be driven by default (`--decode-budget` defaults to 5s, since these are large).
+- **Each browser's decode is checked to be the final image.** A browser that showed only
+  layer 0 would still report full dimensions, so dimensions prove nothing. Instead a
+  centre crop (`--crop-size`, default 1024) is drawn to a canvas, sent back as PNG, and
+  scored against the same crop of the reference. It has to come within 10 of the libavif/
+  libjxl decode's crop score; layer 0 alone scores below zero.
+- The AVIF's layer 0 is scored on its own too (as `avifdec` upscales it), to show what the
+  preview looks like before layer 1 arrives.
+- libavif comes from `$LIBAVIF_BUILD`, else `~/dev/libavif/build`, else PATH.
+
+Files go in `out/<image-stem>-progressive/`: `reference.png`, the bitstreams (named by group, e.g. `avif-s6-progressive.avif`), and
+`results.json` (argv, sizes, scores, every encode and decode sample, tool and browser
+versions). Each run replaces the previous one. No caching.
+
 ## Output
 
 Written to `out/<image-stem>-<hash8>/`:

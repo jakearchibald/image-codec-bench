@@ -145,7 +145,7 @@ export function dropDecodeFromData(data, names) {
 }
 
 /** Serve `rootDir` read-only on a random localhost port. */
-async function serveDirectory(rootDir) {
+export async function serveDirectory(rootDir) {
   const server = createServer(async (req, res) => {
     const relative = decodeURIComponent(req.url.split('?')[0]);
 
