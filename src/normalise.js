@@ -17,9 +17,9 @@ import { readHeader, stripChunks } from './png.js';
  *
  * - converts to sRGB and strips metadata, so no downstream colour transform
  * - preserves alpha (plan.md §3: both codecs carry it through correctly)
- * - optional Lanczos downscale via `maxPixels`
+ * - optional Lanczos downscale via `maxPixels`, or to a `width` (aspect kept)
  */
-export async function normalise(input, output, { maxPixels = 0 } = {}) {
+export async function normalise(input, output, { maxPixels = 0, width = 0 } = {}) {
   const source = await sourceInfo(input);
   const args = [input, '-auto-orient', '-colorspace', 'sRGB', '-strip'];
 
@@ -28,6 +28,11 @@ export async function normalise(input, output, { maxPixels = 0 } = {}) {
     // shrink, never enlarge (`>` would need the area form; magick's @ already
     // scales down only when the source is larger, but we guard anyway below).
     args.push('-filter', 'Lanczos', '-resize', `${maxPixels}@>`);
+  }
+  if (width > 0) {
+    // `>`: only shrink. A source narrower than `width` comes out unchanged,
+    // which `resized: false` reports.
+    args.push('-filter', 'Lanczos', '-resize', `${width}x>`);
   }
 
   // -depth 8 after the resize so the filter works at full precision, and

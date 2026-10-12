@@ -92,8 +92,35 @@ export const GAIN_MAP_QUALITY_OFFSET = -5;
  *    so this is where neither loses.
  */
 export function gainMapSettings(quality) {
+  return tunedGainMap(quality, GAIN_MAP_QUALITY_OFFSET);
+}
+
+/** Gain-map quality relative to the base's -q, for an HDR-base gain map. */
+export const HDR_BASE_GAIN_MAP_QUALITY_OFFSET = -10;
+
+/**
+ * Gain-map settings for an HDR-base AVIF (--avif-hdr gainmap-hdr) at base
+ * quality `quality`.
+ *
+ * Only the SDR rendition depends on this gain map, and the run doesn't score
+ * that, so these come from a separate sweep on the neon pair at -s 6 that
+ * tone-mapped to SDR (headroom 0) and scored against the SDR PNG with
+ * SSIMULACRA2 and ColorVideoVDP (the README has the numbers):
+ *  - 10-bit beats libavif's default 8-bit on both metrics at every quality,
+ *    for the same bytes or fewer.
+ *  - Full resolution and 4:4:4: half size capped the SDR rendition at ~62
+ *    whatever the quality, and 4:2:0 lost on both metrics. 4:0:0 can't carry
+ *    the colour change from the HDR primaries to sRGB.
+ *  - Quality 10 below the base beat the old setting (8-bit at -q) on both
+ *    metrics with a ~27% smaller gain map; ColorVideoVDP gained little above it.
+ */
+export function hdrBaseGainMapSettings(quality) {
+  return tunedGainMap(quality, HDR_BASE_GAIN_MAP_QUALITY_OFFSET);
+}
+
+function tunedGainMap(quality, offset) {
   return {
-    quality: Math.max(0, Math.min(100, quality + GAIN_MAP_QUALITY_OFFSET)),
+    quality: Math.max(0, Math.min(100, quality + offset)),
     depth: 10,
     yuv: '444',
     downscaling: 1,
@@ -107,8 +134,8 @@ export function gainMapSettings(quality) {
  * `hdrBase` (--avif-hdr gainmap-hdr) it runs the other way: the HDR PNG is the
  * base, as PQ, and the gain map maps down to the SDR one -- the direction
  * JXL's jhgm is meant for. That gain map only serves the SDR rendition, which
- * isn't scored, so it keeps libavif's defaults with quality = -q. `-d`/`-y`
- * apply to the base.
+ * isn't scored; it's configured by `hdrBaseGainMapSettings`. `-d`/`-y` apply
+ * to the base.
  */
 function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads, hdr, hdrBase = false }) {
   const { sdr } = hdr;
@@ -120,7 +147,7 @@ function buildGainMapArgs({ input, output, quality, effort, depth, yuv, threads,
     ...(hdrBase ? [input.hdr, input.sdr] : [input.sdr, input.hdr]),
     output,
     '-q', String(quality),
-    ...gainMapArgs(hdrBase ? { quality } : gainMapSettings(quality)),
+    ...gainMapArgs(hdrBase ? hdrBaseGainMapSettings(quality) : gainMapSettings(quality)),
     '-y', yuv, '-d', String(depth),
     '-s', String(effort),
     '-j', threads === 'single' ? '1' : 'all',

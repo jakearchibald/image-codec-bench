@@ -6,10 +6,12 @@ import zlib from 'node:zlib';
 
 import {
   FULL_HEADROOM,
+  checkHdrInput,
   hasGainMap,
   iccToCicp,
   isHdrPng,
   pngColour,
+  pqDepthNote,
   readCicp,
   tonemapArgs,
   withOnlyCicp,
@@ -140,6 +142,27 @@ test('isHdrPng: PQ via cICP, or via an ICC cicp tag with no cICP chunk', () => {
   assert.ok(isHdrPng(png(chunk('IHDR', Buffer.alloc(13)), chunk('cICP', Buffer.from([12, 16, 0, 1])))));
   assert.ok(isHdrPng(png(chunk('IHDR', Buffer.alloc(13)), iccp(icc({ ...P3, cicp: [12, 16, 0, 1] })))));
   assert.ok(!isHdrPng(png(chunk('IHDR', Buffer.alloc(13)), iccp(icc(P3)))));
+});
+
+test('checkHdrInput: an HDR PNG needs --sdr, --sdr needs an HDR PNG, gain-map JPEGs are refused', () => {
+  const pq = png(chunk('IHDR', Buffer.alloc(13)), chunk('cICP', Buffer.from([12, 16, 0, 1])));
+  const srgb = png(chunk('IHDR', Buffer.alloc(13)), chunk('sRGB', Buffer.from([0])));
+  assert.equal(checkHdrInput({ input: 'a.png', inputBytes: pq, sdr: 'b.png' }), true);
+  assert.equal(checkHdrInput({ input: 'a.png', inputBytes: srgb, sdr: null }), false);
+  assert.throws(() => checkHdrInput({ input: 'a.png', inputBytes: pq, sdr: null }), /--sdr image-sdr\.png/);
+  assert.throws(() => checkHdrInput({ input: 'a.png', inputBytes: srgb, sdr: 'b.png' }), /not an HDR PNG/);
+  const gainMapJpeg = jpeg({ marker: 0xe1, body: Buffer.from('http://ns.adobe.com/hdr-gain-map/') });
+  assert.throws(
+    () => checkHdrInput({ input: 'a.jpg', inputBytes: gainMapJpeg, sdr: null, command: 'node src/target.js' }),
+    /run: node src\/target\.js image-hdr\.png/,
+  );
+});
+
+test('pqDepthNote: only for PQ-coded modes at 8-bit', () => {
+  assert.match(pqDepthNote(['gainmap', 'pq'], [8, 10]), /^Note: pq AVIF at 8-bit will band/);
+  assert.match(pqDepthNote(['gainmap-hdr', 'pq'], [8]), /gainmap-hdr and pq AVIF/);
+  assert.equal(pqDepthNote(['gainmap'], [8]), null);
+  assert.equal(pqDepthNote(['pq'], [10, 12]), null);
 });
 
 test('withOnlyCicp keeps the pixels, drops everything else, and writes a valid cICP', () => {
@@ -330,7 +353,13 @@ test('gain map on an HDR base: combine with the inputs swapped, decoded as its b
   assert.deepEqual(args.slice(0, 4), ['combine', 'hdr.png', 'sdr.png', 'o.avif']);
   assert.equal(args[args.indexOf('--cicp-base') + 1], '9/16/9');
   assert.equal(args[args.indexOf('--cicp-alternate') + 1], '1/13/0');
-  assert.equal(args[args.indexOf('--qgain-map') + 1], '55');
+  const gm = avif.hdrBaseGainMapSettings(55);
+  assert.equal(args[args.indexOf('--qgain-map') + 1], String(gm.quality));
+  assert.equal(args[args.indexOf('--depth-gain-map') + 1], String(gm.depth));
+  assert.equal(args[args.indexOf('--yuv-gain-map') + 1], gm.yuv);
+  assert.equal(args[args.indexOf('--downscaling') + 1], String(gm.downscaling));
+  // -d/-y still apply to the base.
+  assert.equal(args[args.indexOf('-d') + 1], '10');
   assert.equal(avif.hdrEncoderFor('gainmap-hdr'), 'avifgainmaputil');
   // The HDR rendition is the base, so a plain 16-bit decode: no 12-bit tone map.
   assert.deepEqual(avif.hdrDecode({ input: 'a.avif', output: 'a.png', hdr: HDR, hdrMode: 'gainmap-hdr' }),
@@ -338,7 +367,14 @@ test('gain map on an HDR base: combine with the inputs swapped, decoded as its b
   const job = { codec: 'avif', quality: 60, effort: 6, depth: 10, yuv: '444', qalpha: 'match', hdr: true };
   const params = encodeParams({ ...job, hdrMode: 'gainmap-hdr' });
   assert.equal(params.hdrMode, 'gainmap-hdr');
-  assert.equal(params.qgainmap, 60);
+  assert.deepEqual(params.gainMap, avif.hdrBaseGainMapSettings(60));
+});
+
+test('hdrBaseGainMapSettings: 10-bit, 4:4:4, full size, quality 10 below the base, clamped', () => {
+  const gm = avif.hdrBaseGainMapSettings(60);
+  assert.deepEqual(gm, { quality: 50, depth: 10, yuv: '444', downscaling: 1 });
+  assert.equal(avif.HDR_BASE_GAIN_MAP_QUALITY_OFFSET, -10);
+  assert.equal(avif.hdrBaseGainMapSettings(5).quality, 0);
 });
 
 test('hdrCaveats describe whichever AVIF modes a run used', async () => {
@@ -349,6 +385,7 @@ test('hdrCaveats describe whichever AVIF modes a run used', async () => {
   assert.doesNotMatch(text(['pq']), /precision penalty/);
   assert.match(text(['gainmap']), /precision penalty/);
   assert.match(text(['gainmap-hdr']), /never measured/);
+  assert.match(text(['gainmap-hdr']), /HDR-base gain map is 10-bit, 4:4:4, full resolution, at quality 10 below the base/);
   assert.doesNotMatch(text(['gainmap-hdr']), /precision penalty/);
   assert.match(text(['gainmap', 'gainmap-hdr', 'pq']), /3 kinds of AVIF/);
 });

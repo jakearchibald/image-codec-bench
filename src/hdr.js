@@ -208,6 +208,49 @@ export function pngColour(buffer) {
   return { primaries: 1, transfer: SRGB_TRANSFER, source: 'no colour chunks; assumed sRGB' };
 }
 
+/**
+ * Is this an HDR run? HDR mode is an HDR (PQ) PNG as the input plus `sdr`,
+ * the SDR rendition that becomes the AVIF gain map's base. Each without the
+ * other is an error, as is a gain-map JPEG, which would otherwise run as SDR
+ * and lose its HDR. `command` is what the hint tells the user to run.
+ */
+export function checkHdrInput({ input, inputBytes, sdr, command = 'node src/cli.js' }) {
+  if (hasGainMap(inputBytes)) {
+    throw new Error(
+      'Gain-map JPEGs are not an input format. Export the SDR and HDR renditions as PNGs ' +
+        `(e.g. from Photoshop) and run: ${command} image-hdr.png --sdr image-sdr.png`,
+    );
+  }
+  const hdr = isHdrPng(inputBytes);
+  if (hdr && !sdr) {
+    throw new Error(
+      `${path.basename(input)} is an HDR (PQ) PNG. HDR runs also need the SDR rendition ` +
+        'as the AVIF gain map base: --sdr image-sdr.png',
+    );
+  }
+  if (!hdr && sdr) {
+    throw new Error(
+      `--sdr was given, but ${path.basename(input)} is not an HDR PNG (no PQ transfer in ` +
+        'its cICP chunk or ICC profile).',
+    );
+  }
+  return hdr;
+}
+
+/**
+ * The warning for AVIF modes that code PQ at 8-bit, or null. PQ spreads
+ * 0-10,000 nits over the code values, so 8-bit bands; an SDR base is fine.
+ */
+export function pqDepthNote(hdrModes, depths) {
+  const pqBase = hdrModes.filter((m) => m === 'pq' || m === 'gainmap-hdr');
+  if (pqBase.length === 0 || !depths.includes(8)) return null;
+  return (
+    `Note: ${pqBase.join(' and ')} AVIF at 8-bit will band. PQ spreads 0-10,000 nits over\n` +
+    '      the code values, so it wants --avif-depth 10 (or 12); 8-bit is fine for an\n' +
+    '      SDR base.\n'
+  );
+}
+
 /** Is this PNG an HDR (PQ) image? */
 export function isHdrPng(buffer) {
   try {

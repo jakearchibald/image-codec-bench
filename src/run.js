@@ -55,11 +55,13 @@ export function encodeParams(job) {
     // default SDR-base gain map get their own field.
     if (job.hdr) {
       if (job.hdrMode && job.hdrMode !== 'gainmap') params.hdrMode = job.hdrMode;
-      // An SDR-base gain map's settings follow a rule (avif.gainMapSettings),
-      // so the key carries the settings themselves: change the rule and the
-      // jobs re-encode rather than silently reusing files made the old way.
-      if (job.hdrMode === 'gainmap-hdr') params.qgainmap = job.quality;
-      else if (job.hdrMode !== 'pq') params.gainMap = getCodec('avif').gainMapSettings(job.quality);
+      // Gain-map settings follow a rule (avif.gainMapSettings and
+      // avif.hdrBaseGainMapSettings), so the key carries the settings
+      // themselves: change the rule and the jobs re-encode rather than
+      // silently reusing files made the old way.
+      const avif = getCodec('avif');
+      if (job.hdrMode === 'gainmap-hdr') params.gainMap = avif.hdrBaseGainMapSettings(job.quality);
+      else if (job.hdrMode !== 'pq') params.gainMap = avif.gainMapSettings(job.quality);
     }
   }
   return params;

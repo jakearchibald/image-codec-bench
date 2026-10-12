@@ -19,7 +19,7 @@ import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
 import { avif } from './codecs/index.js';
 import { INSTALL_HINT, prepareCvvdp, probeCvvdp, toTiff } from './cvvdp.js';
-import { SDR_WHITE_NITS, hasGainMap, isHdrPng, prepareHdrReference } from './hdr.js';
+import { SDR_WHITE_NITS, checkHdrInput, pqDepthNote, prepareHdrReference } from './hdr.js';
 import { losslessSuite } from './lossless.js';
 import { normalise } from './normalise.js';
 import { readHeader } from './png.js';
@@ -58,7 +58,7 @@ async function main(argv) {
   }
 
   const inputBytes = await readFile(config.input);
-  config.hdr = await hdrMode(config, inputBytes);
+  config.hdr = checkHdrInput({ input: config.input, inputBytes, sdr: config.sdr });
   const sdrBytes = config.hdr ? await readFile(config.sdr) : null;
   if (!config.hdr && config.avifHdrExplicit) {
     throw new Error('--avif-hdr only applies to HDR runs (an HDR PNG with --sdr).');
@@ -152,23 +152,19 @@ async function main(argv) {
             gainmap: 'SDR PNG base + gain map up to the HDR PNG',
             'gainmap-hdr': 'HDR PNG base (PQ) + gain map down to the SDR PNG',
             pq: 'the HDR PNG as PQ',
-          })[mode]).join(';\n           ')}.${config.avif.hdrModes.includes('gainmap')
-            ? `\n           SDR-base gain map: 10-bit 4:4:4, full size, quality -q${
-              avif.GAIN_MAP_QUALITY_OFFSET < 0 ? avif.GAIN_MAP_QUALITY_OFFSET : `+${avif.GAIN_MAP_QUALITY_OFFSET}`}.`
-            : ''}\n` +
+          })[mode]).join(';\n           ')}.${[
+            ['gainmap', 'SDR-base', avif.GAIN_MAP_QUALITY_OFFSET],
+            ['gainmap-hdr', 'HDR-base', avif.HDR_BASE_GAIN_MAP_QUALITY_OFFSET],
+          ].filter(([mode]) => config.avif.hdrModes.includes(mode)).map(([, which, offset]) =>
+            `\n           ${which} gain map: 10-bit 4:4:4, full size, quality -q${offset < 0 ? offset : `+${offset}`}.`,
+          ).join('')}\n` +
           '     JXL: the HDR PNG as PQ. Scored against the HDR PNG with experimental PU21\n' +
           '     SSIMULACRA2 (fast-ssim2).\n' +
           '     Lossless suite skipped: the two lossless files would not be the same image.\n',
       );
     }
-    const pqBase = config.avif.hdrModes.filter((m) => m === 'pq' || m === 'gainmap-hdr');
-    if (reference.hdr && pqBase.length > 0 && config.avif.depth.includes(8)) {
-      process.stdout.write(
-        `Note: ${pqBase.join(' and ')} AVIF at 8-bit will band. PQ spreads 0-10,000 nits over\n` +
-          '      the code values, so it wants --avif-depth 10 (or 12); 8-bit is fine for an\n' +
-          '      SDR base.\n',
-      );
-    }
+    const depthNote = reference.hdr ? pqDepthNote(config.avif.hdrModes, config.avif.depth) : null;
+    if (depthNote) process.stdout.write(depthNote);
     if (reference.hasAlpha) {
       process.stdout.write(
         'Note: image has alpha. Transparent pixels are scored free, so absolute\n' +
@@ -613,34 +609,6 @@ async function migrateLegacyStore({ resultsPath, fullResultsPath }) {
   } catch {
     // No legacy file, or unreadable: nothing to carry over.
   }
-}
-
-/**
- * HDR mode: the input is a PQ PNG, and `--sdr` supplies the SDR rendition
- * that becomes the AVIF gain map's base. Each without the other is an error,
- * as is a gain-map JPEG, which would otherwise run as SDR and lose its HDR.
- */
-async function hdrMode(config, inputBytes) {
-  if (hasGainMap(inputBytes)) {
-    throw new Error(
-      'Gain-map JPEGs are not an input format. Export the SDR and HDR renditions as PNGs ' +
-        '(e.g. from Photoshop) and run: node src/cli.js image-hdr.png --sdr image-sdr.png',
-    );
-  }
-  const hdr = isHdrPng(inputBytes);
-  if (hdr && !config.sdr) {
-    throw new Error(
-      `${path.basename(config.input)} is an HDR (PQ) PNG. HDR runs also need the SDR rendition ` +
-        'as the AVIF gain map base: --sdr image-sdr.png',
-    );
-  }
-  if (!hdr && config.sdr) {
-    throw new Error(
-      `--sdr was given, but ${path.basename(config.input)} is not an HDR PNG (no PQ transfer in ` +
-        'its cICP chunk or ICC profile).',
-    );
-  }
-  return hdr;
 }
 
 /**

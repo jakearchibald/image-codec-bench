@@ -3,6 +3,9 @@
 // for the lowest quality that reaches each score and keep that file, named for
 // its settings and the score it got. Reuses the bench's codecs, normalisation,
 // decode + scoring and file naming, so files and scores match a bench run.
+//
+// HDR input works as in src/cli.js: an HDR (PQ) PNG plus --sdr, AVIF in the
+// --avif-hdr modes, and targets on the PU21 SSIMULACRA2 scale (src/hdr.js).
 
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -10,10 +13,10 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { getCodec } from './codecs/index.js';
-import { parsePixels, parseYuvModes } from './config.js';
+import { parseHdrModes, parsePixels, parseYuvModes } from './config.js';
 import { assertToolchain, doctor, formatDoctor } from './doctor.js';
 import { run as exec } from './exec.js';
-import { hasGainMap, isHdrPng } from './hdr.js';
+import { checkHdrInput, pqDepthNote, prepareHdrReference } from './hdr.js';
 import { normalise } from './normalise.js';
 import { readHeader } from './png.js';
 import { CANONICAL_THREADS, bitstreamName, encodeInput, encoderFor } from './run.js';
@@ -28,9 +31,11 @@ const OPTIONS = {
   'avif-depth': { type: 'string', default: '8' },
   'avif-yuv': { type: 'string', default: '444' },
   'avif-qalpha': { type: 'string', default: 'match' },
+  'avif-hdr': { type: 'string' },
   'jxl-effort': { type: 'string', default: '7' },
   'jxl-step': { type: 'string', default: '0.1' },
   'max-pixels': { type: 'string', default: '0' },
+  sdr: { type: 'string' },
   out: { type: 'string', default: 'out' },
   concurrency: { type: 'string', default: '1' },
   quiet: { type: 'boolean' },
@@ -55,10 +60,17 @@ Options:
   --avif-depth LIST          avifenc -d (default 8; e.g. 8,10)
   --avif-yuv LIST            444 | 422 | 420 | 400, comma-separated (default 444)
   --avif-qalpha VALUE        'match' to track -q, or 0..100 (default match)
+  --avif-hdr LIST            HDR mode: gainmap | gainmap-hdr | pq, comma-separated
+                             (default gainmap), as in src/cli.js
   --jxl-effort RANGE         cjxl -e (default 7)
   --jxl-step N               cjxl -q search precision (default 0.1; avifenc -q
                              is integer only)
-  --max-pixels N             downscale source to fit N pixels first (e.g. 2MP)
+  --max-pixels N             downscale source to fit N pixels first (e.g. 2MP;
+                             not available for HDR input)
+  --sdr FILE                 HDR mode: the input is an HDR (PQ) PNG and FILE is the
+                             SDR rendition, used as the AVIF gain map's base.
+                             Targets are then PU21 SSIMULACRA2 scores, which are
+                             not on the same scale as SDR ones
   --out DIR                  files go in DIR/<image>-targets (default out)
   --concurrency N            settings searched in parallel (default 1)
   --quiet                    only print the results table
@@ -67,6 +79,7 @@ Options:
 Examples:
   node src/target.js photo.png -t 70
   node src/target.js photo.png -t 60,70,80,90 --avif-yuv 420,444 --avif-speed 0,6 --jxl-effort 7,9
+  node src/target.js photo-hdr.png --sdr photo-sdr.png -t 60,70 --avif-depth 10 --avif-hdr gainmap,pq
 `;
 
 /** Quality grid searched per codec: avifenc -q is integer, cjxl -q is not. */
@@ -104,8 +117,10 @@ function resolveConfig(values, positionals) {
       depth: parseRange(values['avif-depth'], { integer: true }),
       yuv: parseYuvModes(values['avif-yuv']),
       qalpha: values['avif-qalpha'],
+      hdrModes: parseHdrModes(values['avif-hdr'] ?? 'gainmap'),
       quality: [],
     },
+    avifHdrExplicit: values['avif-hdr'] !== undefined,
     jxl: {
       effort: parseRange(values['jxl-effort'], { integer: true }),
       depth: [8],
@@ -113,6 +128,9 @@ function resolveConfig(values, positionals) {
     },
     jxlStep: Number(values['jxl-step']),
     maxPixels: parsePixels(values['max-pixels']),
+    // HDR mode (src/hdr.js): the input is a PQ PNG and this is the SDR
+    // rendition of the same image, used as the AVIF gain map's base.
+    sdr: values.sdr ? path.resolve(values.sdr) : null,
     concurrency: Number(values.concurrency),
     quiet: values.quiet === true,
   };
@@ -148,11 +166,18 @@ async function main(argv) {
   };
 
   const inputBytes = await readFile(config.input);
-  if (hasGainMap(inputBytes) || isHdrPng(inputBytes)) {
-    throw new Error('HDR input is not supported here; use src/cli.js with --sdr.');
+  config.hdr = checkHdrInput({ input: config.input, inputBytes, sdr: config.sdr, command: 'node src/target.js' });
+  if (!config.hdr && config.avifHdrExplicit) {
+    throw new Error('--avif-hdr only applies to HDR runs (an HDR PNG with --sdr).');
+  }
+  if (config.hdr && config.maxPixels > 0) {
+    throw new Error(
+      '--max-pixels is not available for HDR input: the AVIF gain map is computed from the ' +
+        'two PNGs as given. Downscale both PNGs first.',
+    );
   }
 
-  const health = await doctor({ log });
+  const health = await doctor({ hdr: config.hdr, log });
   log(`${formatDoctor(health)}\n`);
   assertToolchain(health);
 
@@ -161,17 +186,38 @@ async function main(argv) {
   const tempDir = path.join(outDir, '.tmp');
   await mkdir(tempDir, { recursive: true });
 
-  const reference = await normalise(config.input, path.join(tempDir, 'reference.png'), {
-    maxPixels: config.maxPixels,
-  });
+  const referencePath = path.join(tempDir, 'reference.png');
+  const reference = config.hdr
+    ? await prepareHdrReference({
+        hdrInput: config.input,
+        hdrBytes: inputBytes,
+        sdrInput: config.sdr,
+        sdrBytes: await readFile(config.sdr),
+        output: referencePath,
+      })
+    : await normalise(config.input, referencePath, { maxPixels: config.maxPixels });
   const referenceHeader = readHeader(await readFile(reference.path));
   log(
     `Reference: ${reference.width}x${reference.height} (${reference.megapixels.toFixed(2)} MP)` +
       `${reference.resized ? ', downscaled' : ''}`,
   );
+  if (reference.hdr) {
+    const { hdr } = reference;
+    const encodes = {
+      avif: `AVIF as ${config.avif.hdrModes.join(', ')}`,
+      jxl: 'JXL as PQ',
+    };
+    log(
+      `HDR: PQ, ${hdr.primariesName} primaries, peak ${hdr.peakNits.toFixed(0)} nits; SDR PNG ` +
+        `${hdr.sdr.primariesName}. ${config.codecs.map((c) => encodes[c]).join('; ')}.`,
+    );
+    const depthNote = pqDepthNote(config.avif.hdrModes, config.avif.depth);
+    if (depthNote) log(depthNote.trimEnd());
+  }
 
+  const metric = reference.hdr ? 'PU21 SSIMULACRA2' : 'SSIMULACRA2';
   const series = buildSeries(config);
-  log(`Searching ${series.length} setting(s) for SSIMULACRA2 ${config.targets.join(', ')}...\n`);
+  log(`Searching ${series.length} setting(s) for ${metric} ${config.targets.join(', ')}...\n`);
 
   const rows = (await mapConcurrent(series, config.concurrency, async (s) => {
     const codec = getCodec(s.codec);
@@ -187,6 +233,8 @@ async function main(argv) {
         encoderFor(codec, reference, job),
         codec.buildEncodeArgs({
           input: encodeInput(reference, s.codec),
+          hdr: reference.hdr ?? null,
+          hdrMode: s.hdrMode ?? null,
           output: bitstream,
           quality,
           effort: s.effort,
@@ -202,6 +250,8 @@ async function main(argv) {
         reference: reference.path,
         referenceHeader,
         workDir: tempDir,
+        hdr: reference.hdr ?? null,
+        hdrMode: s.hdrMode ?? null,
       });
       log(`  ${path.basename(bitstream, path.extname(bitstream))}: ${score.toFixed(2)}`);
       return score;
@@ -212,7 +262,7 @@ async function main(argv) {
       const hit = await searchQuality({ ...qualityGrid(s.codec, config), target, probe, known });
       if (!hit) {
         log(`  ${s.id}: can't reach ${target} (q100 scores ${known.get(100).toFixed(2)})`);
-        found.push({ codec: s.codec, effort: s.effort, depth: s.depth, yuv: s.yuv, target, file: null });
+        found.push({ codec: s.codec, effort: s.effort, depth: s.depth, yuv: s.yuv, hdrMode: s.hdrMode, target, file: null });
         continue;
       }
       const job = jobAt(hit.quality);
@@ -224,6 +274,7 @@ async function main(argv) {
         effort: s.effort,
         depth: s.depth,
         yuv: s.yuv,
+        hdrMode: s.hdrMode,
         target,
         quality: hit.quality,
         score: hit.score,
@@ -251,7 +302,7 @@ function formatRows(rows) {
       String(r.target),
       r.file ? r.score.toFixed(2) : '--',
       r.file ? r.bytes.toLocaleString('en-US') : '--',
-      r.file ?? `unreachable (${[r.codec, `e${r.effort}`, r.yuv && `yuv${r.yuv}`].filter(Boolean).join('-')})`,
+      r.file ?? `unreachable (${[r.codec, `e${r.effort}`, r.yuv && `yuv${r.yuv}`, r.hdrMode].filter(Boolean).join('-')})`,
     ]),
   ];
   const widths = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));

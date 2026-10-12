@@ -108,7 +108,7 @@ node src/cli.js neon-hdr.png --sdr neon-sdr.png --no-timing
   - `gainmap-hdr`: HDR PNG base, as PQ, + gain map down to the SDR PNG (the direction
     JXL's gain maps are meant for). Its scored image *is* its base, so it scores exactly
     like `pq`; the difference is the bytes of the gain map, which only serves SDR displays
-    and whose quality isn't measured.
+    and whose quality isn't measured by a run (see below for how its settings were chosen).
   - `pq`: the HDR PNG as PQ, like for like with JXL.
 
   PQ and HDR-base AVIF want `--avif-depth 10` or 12; the CLI warns at 8, which bands. Both
@@ -134,6 +134,29 @@ node src/cli.js neon-hdr.png --sdr neon-sdr.png --no-timing
   score far below everything else. −5 was the only setting better on both metrics, and it
   held in every third of the quality range. One image, so treat the rule as a starting
   point rather than a law.
+- **HDR-base gain maps use tuned settings too**: 10-bit, 4:4:4, full resolution, quality 10
+  below the base's `-q` (`hdrBaseGainMapSettings` in [`src/codecs/avif.js`](src/codecs/avif.js)).
+  Only the SDR rendition depends on this gain map, so the sweep scored that: each file
+  tone-mapped to SDR (`--headroom 0`) against the SDR PNG with SSIMULACRA2 and
+  ColorVideoVDP, neon pair, `-s 6`, 10-bit PQ base. At base `-q` 70 (145 KB of base; a
+  lossless gain map would give SDR 75.2):
+
+  | gain map | gain-map bytes | SDR SSIMULACRA2 | SDR ColorVideoVDP |
+  |---|---|---|---|
+  | 8-bit, 4:4:4, full, `-q` (the previous setting) | 139 KB | 72.0 | 9.841 |
+  | **10-bit, 4:4:4, full, `-q` −10** | **102 KB** | **72.2** | **9.846** |
+  | 10-bit, 4:4:4, full, `-q` −20 | 73 KB | 70.1 | 9.834 |
+  | 10-bit, 4:4:4, half size, `-q` | — | 59.6 | 9.760 |
+  | 10-bit, 4:2:0, full, `-q` | — | 69.9 | 9.827 |
+
+  10-bit was better than 8-bit on both metrics at every quality, for the same bytes or
+  fewer. Half size capped the SDR rendition at ~62 even at gain-map quality 90, probably
+  because the HDR-to-SDR change is concentrated on the thin neon tubes, and 4:0:0 scored
+  below zero, since it can't carry the change from the HDR primaries to sRGB. −10 beat the
+  previous setting on both metrics with a smaller gain map; above it ColorVideoVDP gained
+  little. The pattern held at base `-q` 50 and 85. Even so, on this image the gain map
+  costs about what a standalone SDR AVIF of the same quality would (~85 KB at
+  SSIMULACRA2 72).
 - **JXL** encodes the HDR PNG as PQ. Linear-light JXL looked closer to the gain map in
   Chrome but was wrong in Safari, and much of the difference depended on monitor brightness.
 - **Scoring** compares against the HDR PNG at full precision. AVIF gain maps are rendered
@@ -183,7 +206,15 @@ bench, so the scores match a bench run at the same settings.
 - It assumes the score rises with quality. That is close to true, so a file always
   reaches its target but may occasionally be a step above the lowest quality that would.
 - A target the setting can't reach even at `-q 100` is reported, not written.
-- SDR only, no caching between runs. `node src/target.js --help` lists every flag.
+- HDR input works as in the bench: an HDR PNG plus `--sdr`, with `--avif-hdr` picking the
+  AVIF modes (each its own setting, with the same gain-map settings). Targets are then
+  PU21 SSIMULACRA2 scores, and `--max-pixels` isn't available.
+
+  ```sh
+  node src/target.js neon-hdr.png --sdr neon-sdr.png -t 60,70 --avif-depth 10 --avif-hdr gainmap,pq
+  ```
+
+- No caching between runs. `node src/target.js --help` lists every flag.
 
 ### Score variation at a fixed quality (`src/fixed-quality.js`)
 
@@ -207,6 +238,48 @@ table per codec, one column per effort.
 - HDR images in the directory are skipped. `--max-pixels` applies to every image.
 - The defaults include `avifenc -s 0` and `cjxl -e 10`, which are very slow on large
   images; narrow `--avif-speed`/`--jxl-effort` or use `--max-pixels` for a quick look.
+
+### JPEG → JPEG XL transcoding (`src/jpeg-transcode.js`)
+
+What JPEG XL's lossless JPEG transcoding saves, and what the JXL costs to decode compared
+with the JPEG it came from. For each image × width × quality × progressive level: resize
+(Lanczos, never upscaling), encode with `cjpegli` at 4:2:0, transcode with `cjxl`, then
+time `createImageBitmap` for both files in each browser, the same way the bench does.
+
+```sh
+node src/jpeg-transcode.js inputs/f1.png -w 400:2000:400 -q 70,85 -p 0,2
+```
+
+- **The JPEG has no metadata.** The reference is stripped sRGB, so jpegli writes no APPn
+  or COM segments at all (not even JFIF), and the run asserts that.
+- **The JXL is the smallest cjxl makes**: `--lossless_jpeg=1 --allow_jpeg_reconstruction=0`
+  at every `--jxl-effort` (default 1–10), keeping the smallest, ties to the lower effort.
+  Dropping reconstruction data also drops the container: about 350 bytes on a 90 KB file.
+  Effort is not monotonic for transcoding: on one 1200px q80 file e5–7 gave 78,661 bytes,
+  e8–9 ~78,730 and e10 78,935, and the winner changes with size and quality. Each
+  setting's sizes are kept as `jxlByEffort`.
+- **Progressive matters for decode time.** jpegli's default is `-p 2`; `-p 0` is
+  sequential. A progressive JPEG decodes 2–3× slower in Chrome and Firefox, while the JXL
+  is the same size whichever it came from. So the JPEG decode baseline depends on `-p`.
+- `--decode-browsers` defaults to `all` (Chrome Canary, Firefox Nightly, Safari),
+  skipping any that can't be driven. Named browsers are required, but one failing still
+  doesn't cost the other browsers' results. A browser session that fails to start is
+  retried once.
+- `cjpegli` isn't packaged by Homebrew (jpegli left libjxl for
+  [google/jpegli](https://github.com/google/jpegli)). It is taken from `$CJPEGLI`, else
+  `~/dev/jpegli/build/tools/cjpegli`, else PATH:
+
+  ```sh
+  git clone --recursive https://github.com/google/jpegli ~/dev/jpegli
+  cmake -S ~/dev/jpegli -B ~/dev/jpegli/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+  ninja -C ~/dev/jpegli/build cjpegli
+  ```
+
+Files go in `out/<image-stem>-jpeg-transcode/<image-stem>/` (`out/jpeg-transcode/` for
+several inputs), e.g. `w1200-q80-p2.jpg` and the kept `w1200-q80-p2-e5.jxl`, alongside
+`results.json` (sizes, chosen effort, full decode samples, tool and browser versions) and
+`results.csv`. Each run replaces the previous files for that image. No caching, and no
+scoring: the JXL holds the JPEG's own DCT coefficients.
 
 ## Output
 

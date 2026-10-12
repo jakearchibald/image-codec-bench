@@ -24,6 +24,7 @@ const MIME = {
   '.avif': 'image/avif',
   '.jxl': 'image/jxl',
   '.webp': 'image/webp',
+  '.jpg': 'image/jpeg',
   '.png': 'image/png',
   '.html': 'text/html; charset=utf-8',
 };
