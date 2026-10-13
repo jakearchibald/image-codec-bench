@@ -44,6 +44,29 @@ test('reuses scores known from earlier targets', async () => {
   assert.equal(probe.calls, before);
 });
 
+test('steps out from a one-sided bracket rather than bisecting the grid', async () => {
+  const probe = curve((q) => q);
+  // Only a failing score below the target is known, as after a seed probe.
+  const known = new Map([[40, 40]]);
+  const tried = [];
+  const logged = async (q) => {
+    tried.push(q);
+    return probe(q);
+  };
+  const hit = await searchQuality({ min: 0, max: 100, step: 1, target: 45, probe: logged, known });
+  assert.equal(hit.quality, 45);
+  // Bisecting [40, unreached] would try ~70 first; stepping tries 46.
+  assert.ok(Math.max(...tried) <= 52, `tried ${tried.join(', ')}`);
+});
+
+test('stops at the first score within the tolerance', async () => {
+  const probe = curve((q) => q);
+  const hit = await searchQuality({ min: 0, max: 100, step: 1, target: 60, probe, tolerance: 5 });
+  assert.ok(Math.abs(hit.score - 60) <= 5);
+  // Bisection from 0..100 lands at 50, then ~75, then ~62: within 5 by the third.
+  assert.ok(probe.calls <= 3, `took ${probe.calls} probes`);
+});
+
 test('file names are the bench names plus the achieved score', () => {
   assert.equal(
     targetFileName({ codec: 'avif', quality: 28, effort: 0, depth: 8, yuv: '420' }, 70.04),

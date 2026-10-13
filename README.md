@@ -354,6 +354,125 @@ Files go in `out/<image-stem>-progressive/`: `reference.png`, the bitstreams (na
 `results.json` (argv, sizes, scores, every encode and decode sample, tool and browser
 versions). Each run replaces the previous one. No caching.
 
+### Animation (`src/animation.js`)
+
+File size at equal quality for an animated AVIF (an AV1 image sequence) against an animated
+JPEG XL, plus the cost of each encode. The input is a lossless video, anything ffmpeg reads.
+
+```sh
+node src/animation.js inputs/clip.mkv -t 9,9.5
+```
+
+- **Reference**: every frame is extracted once to an 8-bit sRGB PNG with no colour chunks.
+  YUV sources are converted with their own matrix and range. An untagged source is taken as
+  BT.709 limited range, rather than swscale's BT.601 default. HDR and alpha are refused.
+  cjxl gets an APNG of the frames.
+- **AVIF comes from two AV1 encoders** (`--avif-encoder`, default `aom,svt`). Each writes a
+  bare AV1 stream, which ffmpeg's `avif` muxer puts into an AVIF sequence without
+  re-encoding.
+  - **aomenc** (libaom, the reference encoder). It's used directly rather than through
+    avifenc because libavif only drives libaom in one pass, and `--avif-passes` (default
+    `2`; `1,2` for both) needs aomenc. The encode otherwise matches what avifenc does for a
+    sequence: good-quality usage, `end-usage=q`, `tune=ssim`, `--cpu-used` = avifenc's
+    `-s` (`--avif-speed`, default `6,0`, the good-quality range 0–6 only), and libaom's
+    defaults for lookahead and keyframes. Quality is `--cq-level` (0–63, lower is better;
+    avifenc's `-q` maps to it as `(100 − q) × 63 / 100`).
+  - **SvtAv1EncApp** (SVT-AV1, the production video encoder). It uses `--rc 0 --crf`
+    (1–70, searched in 0.25 steps), `--preset` from `--svt-preset` (default `8,0`, its
+    default and its slowest non-debug preset), and `--tune` from `--svt-tune` (default `0`,
+    VQ; `0,2` compares it with SSIM). SVT-AV1 only does multi-pass for VBR, so it's always
+    one pass. Its default of a keyframe every ~5 seconds is replaced with `--keyint -1`,
+    leaving keyframes to the encoder as with libaom. It only does 4:2:0 at 8 and 10-bit, so
+    other `--avif-yuv`/`--avif-depth` settings run aomenc alone.
+  - `--svt-variant NAME=ARGS` and `--aom-variant NAME=ARGS` (repeatable) add extra encoder
+    arguments as settings of their own, for trying encoder options at equal quality:
+
+    ```sh
+    node src/animation.js clip.mov --avif-encoder svt --svt-variant default= --svt-variant "notf=--enable-tf 0"
+    ```
+
+    With none, each encoder runs once as configured; once any are given, `default=` keeps
+    the plain run in the comparison.
+  - Tunes for still images (`iq`, `ssimulacra2`, SVT-AV1's IQ and MS-SSIM) are left out,
+    and so is SVT-AV1's VMAF tune, which tunes for a metric rather than viewers.
+- **The AV1 input is full-range YUV**, converted once per subsampling and depth by ffmpeg
+  from the reference PNGs: BT.601 matrix (avifenc's default for RGB input), chroma sited
+  at the centre, tagged as BT.709 primaries and sRGB transfer, as avifenc tags its files.
+  aomenc takes full range from the Y4M header, SVT-AV1 from `--color-range 1`, and the AV1
+  sequence header and the AVIF's `colr` box both say so. The conversion isn't part of the
+  encode time. Near-lossless encodes (aomenc `--cq-level 1`, SVT-AV1 `--crf 1`) both decode
+  to SSIMULACRA2 92.7, against 93.3 from avifenc `-q 99`, so the colour path matches
+  avifenc's.
+- **Settings**: each AV1 encoder's efforts × `--avif-yuv` (default `420`) ×
+  `--avif-depth` (default `8,10`; 10-bit coding of an 8-bit source often compresses
+  better), plus aomenc passes and SVT-AV1 tunes, and `--jxl-effort` (default `7,10`). The
+  effort defaults are each encoder's own default and its slowest. `--avif-keyframe` sets
+  a maximum keyframe interval for both AV1 encoders. At the default of 0, the encoder
+  places keyframes itself.
+- **Metric: ColorVideoVDP**, scoring the whole clip as video at the source frame rate,
+  with the same `standard_4k` display as `--cvvdp`. It models temporal sensitivity, so
+  flicker counts, and that is where the formats differ most: AV1 predicts frames from each
+  other, while libjxl codes every frame on its own. Decoded frames (`avifdec`, `djxl`) and
+  the reference are passed to it as lossless RGB FFV1 videos (checked to give the same
+  score as a TIFF frame sequence). Each decode is checked to have the reference's size and frame
+  count, since cvvdp would otherwise score the shorter of the two.
+- **`--ppd`: match the viewing model to how the video will be shown.** By default the
+  scores assume cvvdp's `standard_4k`: each video pixel on one pixel of a 30" 4K monitor
+  at about 75 cm, which is 75.4 video pixels per degree of visual angle. `--ppd` replaces
+  that geometry (cvvdp's `--pix-per-deg`), keeping the luminance and lighting. Work it out
+  as the viewing distance spanned by one degree, divided by the physical size of one video
+  pixel on screen. For example, a 1598 px video at 742.5 CSS px on a 2× 14" MacBook Pro
+  (254 ppi, so 0.1 mm device pixels) is 0.93 device pixels per video pixel, 0.093 mm. At
+  50 cm one degree is 8.7 mm, so `--ppd 94`. A 27" 5K display at 65 cm gives ~105. On a 1×
+  screen the video is halved, which hides most artefacts, so 2× screens are the case that
+  decides the target. Higher ppd means artefacts are smaller, so the same file scores
+  higher.
+- **Search**: for each setting, quality is searched for the JOD closest to each
+  `--target` (or, with `--tolerance 0.1`, the first within 0.1 of it, for a quick look). The search shares probes across targets and starts from the previous
+  setting's answer, with encodes multi-threaded. **Compare the "at target" column**: size
+  interpolated to exactly the target JOD (log size, linear in JOD) between the quality steps
+  either side. Whole-number `--cq-level` can land a few hundredths of a JOD off.
+- **Encode time**: the chosen file is encoded once more, single-threaded by default
+  (`--threads multi` for all cores, `--no-timing` to skip), with peak memory. For AVIF
+  that's the AV1 encoder alone (both passes, for aomenc), not the mux. Single-threaded is
+  `--threads=1` for aomenc and `--lp 1` for SVT-AV1 (a parallelism level, checked to keep
+  to one core). aomenc doesn't give identical bytes single- and multi-threaded (1–4% apart
+  on a test clip), so a file that differs from its search probe is rescored. "at target"
+  still comes from the multi-threaded probes. SVT-AV1 gave identical bytes.
+- **SSIMULACRA2** per frame is reported for the kept files: mean, worst frame, every
+  frame's score in `results.json`, and **flicker**, the mean change in score from one frame
+  to the next. Quality can pulse with the encoder's frame hierarchy without moving the
+  ColorVideoVDP score much: SVT-AV1 preset 8 on `euro-truck.mov`, at 9.5 JOD, scored ~25–30
+  on every 16th frame, 15–20 on every 8th and 3–8 between (flicker 7.1, against a mean of
+  8.5). Whether a given pulse is visible is a separate question; on that clip the visible
+  problem was something else (background dragged along with the moving truck). Nothing is
+  chosen by SSIMULACRA2.
+- Needs aomenc (Homebrew's `aom`), SvtAv1EncApp (`svt-av1`), ffmpeg/ffprobe and the cvvdp venv (see `--cvvdp` above).
+  Each probe is a full encode, decode and cvvdp run of the clip. `--cpu-used 0` on video
+  is very slow, so keep clips short.
+
+Files go in `out/<video-stem>-animation/`:
+
+- each kept bitstream, e.g. `avif-aom-s6-420-d10-p2-cq31.avif`,
+  `avif-svt-p8-420-d10-t0-crf40.5.avif`, `jxl-e7-q42.5.jxl`
+- for each AVIF, the same AV1 stream as an MP4 (`+faststart`, same colour tags), for
+  comparison with serving it as `<video>`
+- `viewer.html`, which flips between the original and each kept file in the same place.
+  Each AVIF is followed by its MP4 in `<video>`, so an artefact that only shows in one is
+  the browser's rendering rather than the encode. It shows them `--view-width` CSS px wide
+  (editable on the page), or by default at one video pixel per device pixel. The original
+  is the input video. If browsers can't play it (FFV1, say), the run writes `original.mov`,
+  a ProRes 4444 XQ copy of the reference frames tagged with the sRGB transfer like the
+  AVIFs, and shows that instead. ProRes only plays in Safari. To compare runs on one page:
+
+  ```sh
+  node src/animation-viewer.js out/a/clip-animation out/b/clip-animation --width 742.5 --out compare.html
+  ```
+- `results.json`: every probe's setting, JOD and bytes, the chosen files (and MP4 sizes)
+  with the commands that made them, encode times, tool versions and the display
+
+Each run replaces the previous one. No caching.
+
 ## Output
 
 Written to `out/<image-stem>-<hash8>/`:

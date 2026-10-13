@@ -1,5 +1,6 @@
 node_modules/
 out/
+out-*/
 tools/hdr-ssim2/target/
 tools/cvvdp/.venv/
 inputs/
