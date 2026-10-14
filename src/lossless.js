@@ -86,6 +86,8 @@ export async function losslessSuite({
 
   try {
     for (const codec of losslessCodecs) {
+      // Built on demand, so only when the run asked for it.
+      if (codec.name === 'jixel' && !config.codecs?.includes('jixel')) continue;
       if (codec.name === 'webp' && !hasWebp) {
         rows.push({
           codec: codec.name,
@@ -109,7 +111,7 @@ export async function losslessSuite({
       // One point per configured effort level: lossless size and lossless
       // encode time trade off against each other, and a single point per codec
       // hides the whole curve.
-      const points = codec.losslessConfigs(config[codec.name]?.effort);
+      const points = codec.losslessConfigs(config[codec.name]?.effort, config[codec.name]);
 
       for (const settings of points) {
       const output = path.join(
@@ -144,6 +146,7 @@ export async function losslessSuite({
             input: reference.path,
             output: target,
             effort: settings.effort,
+            patches: settings.patches,
             lossless: true,
             threads,
           }),
@@ -209,6 +212,7 @@ export async function losslessSuite({
         codec: codec.name,
         effort: settings.effort ?? null,
         effortLabel: settings.effortLabel ?? null,
+        patches: settings.patches ?? null,
         label: settings.label,
         bytes,
         bpp: (bytes * 8) / (referenceHeader.width * referenceHeader.height),

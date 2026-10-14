@@ -89,6 +89,47 @@ tools/cvvdp/.venv/bin/pip install -r tools/cvvdp/requirements.txt
 - Unlike SSIMULACRA2 it has no cliff just below a perfect score: a lossless gain-map AVIF,
   rendered at 12-bit against a 16-bit reference, scores exactly 10.
 
+### A second JPEG XL encoder: jixel (`--codecs …,jixel`)
+
+[jixel](https://github.com/awxkee/jixel) is a Rust JPEG XL encoder ported from
+libjxl-tiny. It has no CLI, so `tools/cjixel` wraps it. That crate pins a jixel git rev
+and is built with `cargo` the first time `--codecs` names jixel. Its output is an
+ordinary `.jxl`, decoded with `djxl` like cjxl's.
+
+```sh
+node src/cli.js photo.png --codecs avif,jxl,jixel --cvvdp
+node src/cli.js photo.png --codecs jixel --jixel-effort 5 --jixel-quality 30:95:5
+node src/cli.js screenshot.png --codecs jxl,jixel --jixel-patches off,on
+```
+
+- `--jixel-effort` is speed 1–6: ultrafast, fastest, fast (jixel's default), medium,
+  slow, extraslow. Higher is slower, like `cjxl -e`. The default is 3,5,6.
+- `--jixel-quality` uses jixel's own `-q`. From q30 to q90 it maps to the same distances
+  as `cjxl -q`, but jixel spends fewer bytes at a given distance, so the same q scores
+  lower. The default range therefore goes up to 95.
+- `--jixel-patches off,on` turns on jixel's patch dictionary (off by default), with each
+  setting as its own series, labelled e.g. `slow+patches`. It matters for text and flat
+  graphics. Photos find no patches.
+- jixel joins the lossless table when `--codecs` names it: one row per speed and patches
+  setting, checked bit-exact like the others.
+- HDR runs work as for cjxl: jixel encodes the PQ reference (cICP primaries, 10,000-nit
+  intensity target, as cjxl writes) and is decoded by `djxl` to 16-bit PQ.
+- `src/target.js` and `src/fixed-quality.js` take `--codecs …,jixel` with
+  `--jixel-effort` and `--jixel-patches` too (`fixed-quality` also `--jixel-quality`).
+- The cache key includes `cjixel --version`, which names the jixel rev. Bumping the pin
+  in `tools/cjixel/Cargo.toml` re-encodes jixel's jobs, and only those: other codecs'
+  keys leave `cjixel` out, so adding jixel to an earlier run re-encodes nothing else.
+- jixel tunes its parameters against SSIMULACRA2. At extraslow it also runs a
+  SSIMULACRA2-driven quant-field loop inside the encoder. Read its curves with
+  `--cvvdp`: in a six-image sweep, extraslow gained ~5% over slow on SSIMULACRA2 but
+  under 1% on cvvdp.
+- Gain maps and HLG aren't driven: jixel can write a gain map but doesn't compute one.
+
+In that sweep (Oct 2026, jixel `b45195a`, six 8-bit SDR inputs, both metrics), jixel
+at slow was ~16% smaller than `cjxl -e7` at equal score, but ~7% larger than
+`avifenc -s6` (10-bit 4:4:4) and ~20% larger than `-s2`. It beat AVIF on one detailed
+photo, and lost clearly on the illustration and the screenshot.
+
 ### HDR input (an HDR PNG plus an SDR PNG)
 
 An HDR PNG (PQ, stated by a `cICP` chunk or an ICC profile's `cicp` tag, as Photoshop
@@ -214,7 +255,10 @@ bench, so the scores match a bench run at the same settings.
   node src/target.js neon-hdr.png --sdr neon-sdr.png -t 60,70 --avif-depth 10 --avif-hdr gainmap,pq
   ```
 
-- No caching between runs. `node src/target.js --help` lists every flag.
+- No caching between runs, but an existing `targets.json` is added to rather than
+  replaced: rows for settings this run searched are replaced and the rest kept. So
+  `--codecs jixel` adds jixel to an earlier AVIF/JXL search without redoing it.
+  `node src/target.js --help` lists every flag.
 
 ### Score variation at a fixed quality (`src/fixed-quality.js`)
 
@@ -230,7 +274,10 @@ node src/fixed-quality.js inputs --avif-quality 60 --avif-speed 0-10 --avif-yuv 
 Results go to `out/<dir-name>-fixed-quality.json`: for each image, every setting's score
 and size, plus a `spread` per codec × depth × yuv giving the lowest and highest scoring
 effort and the range between them. The JSON is rewritten after each image, so an
-interrupted run keeps the images it finished. The console prints the same thing as a
+interrupted run keeps the images it finished. An existing JSON for the same directory is
+added to: per image, settings this run encodes replace their old results and the rest are
+kept (a codec run at a new quality drops its old results). `--images a.png,b.png`
+limits the run to those files. The console prints the same thing as a
 table per codec, one column per effort.
 
 - Same normalisation, encoder flags and scoring as the bench, so scores match a bench run.
@@ -258,6 +305,10 @@ node src/jpeg-transcode.js inputs/f1.png -w 400:2000:400 -q 70,85 -p 0,2
   Effort is not monotonic for transcoding: on one 1200px q80 file e5–7 gave 78,661 bytes,
   e8–9 ~78,730 and e10 78,935, and the winner changes with size and quality. Each
   setting's sizes are kept as `jxlByEffort`.
+- **`--jixel-effort 1-6` adds jixel** (`tools/cjixel --jpeg`, also without reconstruction
+  data), keeping its smallest speed, with sizes in `jixelByEffort` and its own decode
+  timings. Both transcodes carry the same coefficients and decode to identical pixels;
+  only the entropy coding differs.
 - **Progressive matters for decode time.** jpegli's default is `-p 2`; `-p 0` is
   sequential. A progressive JPEG decodes 2–3× slower in Chrome and Firefox, while the JXL
   is the same size whichever it came from. So the JPEG decode baseline depends on `-p`.
@@ -278,8 +329,11 @@ node src/jpeg-transcode.js inputs/f1.png -w 400:2000:400 -q 70,85 -p 0,2
 Files go in `out/<image-stem>-jpeg-transcode/<image-stem>/` (`out/jpeg-transcode/` for
 several inputs), e.g. `w1200-q80-p2.jpg` and the kept `w1200-q80-p2-e5.jxl`, alongside
 `results.json` (sizes, chosen effort, full decode samples, tool and browser versions) and
-`results.csv`. Each run replaces the previous files for that image. No caching, and no
-scoring: the JXL holds the JPEG's own DCT coefficients.
+`results.csv`. A re-run in the same place reuses the earlier one where it can: when the
+cjxl efforts and the cjpegli, cjxl and magick versions match, and the JPEG comes out
+byte-identical, that row's transcode is kept (jixel's too, if its speeds and version
+match), as are decode timings from the same browser build. Files results.json no longer
+describes are removed. No scoring: the JXL holds the JPEG's own DCT coefficients.
 
 ### Progressive overhead (`src/progressive.js`)
 
@@ -533,6 +587,10 @@ node src/cli.js <image> --drop-decode safari      # or chrome,firefox / all
 It edits both `full-results.json` and `results.json`, clears the browser from the run
 metadata, and exits without running anything. Scores, encode timings and bitstreams are
 left alone, so re-running only re-measures decode.
+
+Otherwise a re-run opens one short session per browser to read its version, and times
+only files with no measurement from that version. Adding a codec to a run therefore
+times just the new files, while a browser update re-times everything.
 
 A version-matched chromedriver and a geckodriver are downloaded and cached under
 `~/.cache/image-codec-bench/drivers` if PATH has nothing suitable. Override with

@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import { run, setToolPath, toolPath } from './exec.js';
 import { LIBAVIF_TOOLS, LOCAL_LIBAVIF_DIR, ensureHdrScorer } from './hdr.js';
+import * as jixel from './codecs/jixel.js';
 
 // `ssimulacra2` has no version flag -- it prints usage and exits non-zero for
 // any argument. We hash the binary instead so a toolchain change is still
@@ -28,6 +29,12 @@ const TOOLS = [
 const HDR_TOOLS = [
   { name: 'avifgainmaputil', args: ['help'], required: true },
   { name: 'hdr-ssim2', args: null, required: true },
+];
+
+// Only when --codecs asks for jixel. Built from tools/cjixel, and keyed on the
+// whole version line: it names the jixel git rev, which "0.4.0" alone doesn't.
+const JIXEL_TOOLS = [
+  { name: 'cjixel', args: ['--version'], required: true, keyOnDetail: true },
 ];
 
 function firstLine(text) {
@@ -68,7 +75,7 @@ async function probe(tool) {
   if (!path) {
     return { name: tool.name, present: false, required: tool.required };
   }
-  const entry = { name: tool.name, present: true, required: tool.required, path };
+  const entry = { name: tool.name, present: true, required: tool.required, keyOnDetail: tool.keyOnDetail, path };
   if (tool.args) {
     const { stdout, stderr } = await run(tool.name, tool.args, { allowFailure: true });
     Object.assign(entry, parseVersion(tool.name, stdout, stderr));
@@ -98,7 +105,7 @@ async function isExecutable(filePath) {
  * (all three from the same build, or the tone mapper and the encoder could
  * disagree), falling back to PATH.
  */
-export async function doctor({ hdr = false, log = () => {} } = {}) {
+export async function doctor({ hdr = false, codecs = [], log = () => {} } = {}) {
   let localLibavif = false;
   if (hdr) {
     const local = LIBAVIF_TOOLS.map((name) => path.join(LOCAL_LIBAVIF_DIR, name));
@@ -108,8 +115,12 @@ export async function doctor({ hdr = false, log = () => {} } = {}) {
     }
     setToolPath('hdr-ssim2', await ensureHdrScorer({ log }));
   }
+  const withJixel = codecs.includes('jixel');
+  if (withJixel) setToolPath('cjixel', await jixel.ensureEncoder({ log }));
 
-  const tools = await Promise.all([...TOOLS, ...(hdr ? HDR_TOOLS : [])].map(probe));
+  const tools = await Promise.all(
+    [...TOOLS, ...(hdr ? HDR_TOOLS : []), ...(withJixel ? JIXEL_TOOLS : [])].map(probe),
+  );
   const missing = tools.filter((t) => t.required && !t.present).map((t) => t.name);
   const versions = {};
   for (const tool of tools) {
@@ -117,7 +128,7 @@ export async function doctor({ hdr = false, log = () => {} } = {}) {
     // A local libavif build and the system one both report "1.4.2"; only the
     // full line (which names the aom build) tells them apart.
     const localBuild = localLibavif && LIBAVIF_TOOLS.includes(tool.name);
-    versions[tool.name] = (localBuild ? tool.detail : tool.version) ?? tool.binarySha256 ?? 'unknown';
+    versions[tool.name] = (localBuild || tool.keyOnDetail ? tool.detail : tool.version) ?? tool.binarySha256 ?? 'unknown';
   }
   return {
     tools,
@@ -143,7 +154,8 @@ export function formatDoctor(report) {
       continue;
     }
     const where = tool.path.startsWith(LOCAL_LIBAVIF_DIR) ? `  (${tool.path})` : '';
-    lines.push(`  ${tool.name.padEnd(15)} ${tool.version ?? tool.binarySha256 ?? '?'}${where}`);
+    const shown = tool.keyOnDetail ? tool.detail : tool.version;
+    lines.push(`  ${tool.name.padEnd(15)} ${shown ?? tool.binarySha256 ?? '?'}${where}`);
   }
   const m = report.machine;
   lines.push(`  ${'machine'.padEnd(15)} ${m.cpu}, ${m.cores} logical cores, node ${m.node}`);

@@ -7,10 +7,11 @@
 
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { getCodec } from './codecs/index.js';
-import { parsePixels, parseYuvModes } from './config.js';
+import { parsePatchModes, parsePixels, parseYuvModes } from './config.js';
 import { assertToolchain, doctor, formatDoctor } from './doctor.js';
 import { run as exec } from './exec.js';
 import { hasGainMap, isHdrPng } from './hdr.js';
@@ -31,6 +32,10 @@ const OPTIONS = {
   'avif-qalpha': { type: 'string', default: 'match' },
   'jxl-quality': { type: 'string', default: '75' },
   'jxl-effort': { type: 'string', default: '1-10' },
+  'jixel-quality': { type: 'string', default: '75' },
+  'jixel-effort': { type: 'string', default: '1-6' },
+  'jixel-patches': { type: 'string', default: 'off' },
+  images: { type: 'string' },
   'max-pixels': { type: 'string', default: '0' },
   out: { type: 'string', default: 'out' },
   concurrency: { type: 'string', default: '1' },
@@ -44,12 +49,14 @@ subsampling at a fixed quality.
 Encodes every image in a directory at one quality per codec, across each
 effort/speed level (and, for AVIF, each yuv mode), and scores every file.
 Results go to DIR/<dir-name>-fixed-quality.json; the encoded files are not kept.
+An existing JSON there is added to: each image keeps its results for settings
+this run doesn't encode, so --codecs jixel adds jixel to an earlier avif,jxl run.
 
 Usage:
   node src/fixed-quality.js <directory> [options]
 
 Options:
-  --codecs LIST              avif, jxl (default avif,jxl)
+  --codecs LIST              avif, jxl, jixel (default avif,jxl)
   --avif-quality N           avifenc -q, integer (default 60)
   --avif-speed RANGE         avifenc -s (default 0-10; 0 is slowest)
   --avif-depth LIST          avifenc -d (default 8; e.g. 8,10)
@@ -57,6 +64,10 @@ Options:
   --avif-qalpha VALUE        'match' to track -q, or 0..100 (default match)
   --jxl-quality N            cjxl -q (default 75)
   --jxl-effort RANGE         cjxl -e (default 1-10)
+  --jixel-quality N          jixel -q (default 75)
+  --jixel-effort RANGE       jixel speed (default 1-6; 6 is slowest)
+  --jixel-patches LIST       off | on | off,on (default off)
+  --images LIST              only these file names from the directory (default all)
   --max-pixels N             downscale each source to fit N pixels first (e.g. 2MP)
   --out DIR                  where the JSON goes (default out)
   --concurrency N            encodes in parallel (default 1)
@@ -74,7 +85,7 @@ function resolveConfig(values, positionals) {
 
   const codecs = values.codecs.split(',').map((c) => c.trim()).filter(Boolean);
   for (const name of codecs) {
-    if (name !== 'avif' && name !== 'jxl') throw new Error(`--codecs takes avif and/or jxl (got ${name})`);
+    if (!['avif', 'jxl', 'jixel'].includes(name)) throw new Error(`--codecs takes avif, jxl and/or jixel (got ${name})`);
   }
 
   const config = {
@@ -93,6 +104,13 @@ function resolveConfig(values, positionals) {
       effort: parseRange(values['jxl-effort'], { integer: true }),
       depth: [8],
     },
+    jixel: {
+      quality: [Number(values['jixel-quality'])],
+      effort: parseRange(values['jixel-effort'], { integer: true }),
+      depth: [8],
+      patches: parsePatchModes(values['jixel-patches']),
+    },
+    images: values.images ? values.images.split(',').map((f) => f.trim()).filter(Boolean) : null,
     maxPixels: parsePixels(values['max-pixels']),
     concurrency: Number(values.concurrency),
     quiet: values.quiet === true,
@@ -105,6 +123,13 @@ function resolveConfig(values, positionals) {
   const [jxlQuality] = config.jxl.quality;
   if (Number.isNaN(jxlQuality) || jxlQuality < 0 || jxlQuality > 100) {
     throw new Error(`--jxl-quality must be 0..100 (got ${values['jxl-quality']})`);
+  }
+  const [jixelQuality] = config.jixel.quality;
+  if (Number.isNaN(jixelQuality) || jixelQuality < 0 || jixelQuality > 100) {
+    throw new Error(`--jixel-quality must be 0..100 (got ${values['jixel-quality']})`);
+  }
+  for (const s of config.jixel.effort) {
+    if (s < 1 || s > 6) throw new Error(`jixel speed out of range: ${s} (expected 1..6)`);
   }
   for (const s of config.avif.effort) {
     if (s < 0 || s > 10) throw new Error(`avifenc -s out of range: ${s} (expected 0..10)`);
@@ -123,17 +148,17 @@ function resolveConfig(values, positionals) {
 
 /**
  * Score spread across effort, per image and per group of settings that differ
- * only in effort (codec x depth x yuv), so yuv's effect isn't counted as
- * effort's.
+ * only in effort (codec x depth x yuv x patches), so yuv's (or patches') effect
+ * isn't counted as effort's.
  */
 function summarise(results) {
   const groups = new Map();
   for (const r of results) {
-    const key = [r.codec, `d${r.depth}`, r.yuv && `yuv${r.yuv}`].filter(Boolean).join('-');
-    if (!groups.has(key)) groups.set(key, { codec: r.codec, depth: r.depth, yuv: r.yuv, rows: [] });
+    const key = groupKey(r);
+    if (!groups.has(key)) groups.set(key, { codec: r.codec, depth: r.depth, yuv: r.yuv, patches: r.patches, rows: [] });
     groups.get(key).rows.push(r);
   }
-  return [...groups.entries()].map(([group, { codec, depth, yuv, rows }]) => {
+  return [...groups.entries()].map(([group, { codec, depth, yuv, patches, rows }]) => {
     const best = rows.reduce((a, b) => (b.score > a.score ? b : a));
     const worst = rows.reduce((a, b) => (b.score < a.score ? b : a));
     return {
@@ -141,11 +166,44 @@ function summarise(results) {
       codec,
       depth,
       yuv,
+      ...(patches === undefined ? {} : { patches }),
       min: { effort: worst.effort, score: worst.score },
       max: { effort: best.effort, score: best.score },
       range: best.score - worst.score,
     };
   });
+}
+
+const groupKey = (r) => [r.codec, `d${r.depth}`, r.yuv && `yuv${r.yuv}`, r.patches && 'patches'].filter(Boolean).join('-');
+
+const settingId = (r) => JSON.stringify([r.codec, r.effort, r.depth, r.yuv ?? null, r.patches ?? null]);
+
+/**
+ * Fold this run's images into an earlier JSON for the same directory and
+ * --max-pixels: per image, results for settings encoded now are replaced and
+ * the rest kept, and images this run didn't reach stay as they were. A codec
+ * whose quality changed loses its old results, which were at the old quality.
+ */
+export function mergeFixedQuality(previous, current) {
+  if (!previous || previous.dir !== current.dir || previous.maxPixels !== current.maxPixels) return current;
+  const images = previous.images.map((image) => ({ ...image }));
+  for (const image of current.images) {
+    const old = images.find((i) => i.file === image.file);
+    if (!old) {
+      images.push(image);
+      continue;
+    }
+    const replaced = new Set(image.results.map(settingId));
+    const requalified = (r) => r.codec in current.quality && previous.quality?.[r.codec] !== current.quality[r.codec];
+    const results = [...old.results.filter((r) => !replaced.has(settingId(r)) && !requalified(r)), ...image.results];
+    Object.assign(old, { ...image, results, spread: summarise(results) });
+  }
+  return {
+    ...current,
+    quality: { ...previous.quality, ...current.quality },
+    versions: { ...previous.versions, ...current.versions },
+    images,
+  };
 }
 
 async function main(argv) {
@@ -162,10 +220,11 @@ async function main(argv) {
   const files = (await readdir(config.dir, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
     .map((entry) => entry.name)
+    .filter((name) => !config.images || config.images.includes(name))
     .sort();
   if (files.length === 0) throw new Error(`No images found in ${config.dir}`);
 
-  const health = await doctor({ log });
+  const health = await doctor({ codecs: config.codecs, log });
   log(`${formatDoctor(health)}\n`);
   assertToolchain(health);
 
@@ -174,6 +233,12 @@ async function main(argv) {
   const tempDir = path.join(config.out, `${path.basename(config.dir)}-fixed-quality.tmp`);
   await mkdir(tempDir, { recursive: true });
 
+  let previous = null;
+  try {
+    previous = JSON.parse(await readFile(jsonPath, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   const output = {
     dir: config.dir,
     quality: Object.fromEntries(config.codecs.map((c) => [c, config[c].quality[0]])),
@@ -216,6 +281,7 @@ async function main(argv) {
           depth: s.depth,
           yuv: s.yuv ?? undefined,
           qalpha: s.qalpha ?? undefined,
+          patches: s.patches ?? undefined,
           threads: CANONICAL_THREADS,
         }),
       );
@@ -235,6 +301,7 @@ async function main(argv) {
         effort: s.effort,
         depth: s.depth,
         yuv: s.yuv,
+        ...(s.codec === 'jixel' ? { patches: Boolean(s.patches) } : {}),
         score,
         bytes,
       };
@@ -250,7 +317,7 @@ async function main(argv) {
       spread: summarise(results),
     });
     // After every image, so an interrupted run keeps what it finished.
-    await writeFile(jsonPath, `${JSON.stringify(output, null, 2)}\n`);
+    await writeFile(jsonPath, `${JSON.stringify(mergeFixedQuality(previous, output), null, 2)}\n`);
   }
   await rm(tempDir, { recursive: true, force: true });
 
@@ -269,9 +336,7 @@ function formatTables(images, config) {
           image.spread
             .filter((g) => g.codec === codec)
             .map((g) => {
-              const rows = image.results.filter(
-                (r) => r.codec === codec && r.depth === g.depth && r.yuv === g.yuv,
-              );
+              const rows = image.results.filter((r) => r.codec === codec && groupKey(r) === g.group);
               return [
                 image.file,
                 g.group,
@@ -289,9 +354,12 @@ function formatTables(images, config) {
     .join('\n\n');
 }
 
-try {
-  process.exitCode = await main(process.argv.slice(2));
-} catch (error) {
-  process.stderr.write(`\nError: ${error.message}\n`);
-  process.exitCode = 1;
+// Only when run directly, so tests can import mergeFixedQuality.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    process.exitCode = await main(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`\nError: ${error.message}\n`);
+    process.exitCode = 1;
+  }
 }

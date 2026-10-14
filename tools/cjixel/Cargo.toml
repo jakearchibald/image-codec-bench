@@ -1,0 +1,14 @@
+[package]
+name = "cjixel"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Encode an 8-bit PNG to lossy JPEG XL with jixel (https://github.com/awxkee/jixel)"
+
+[dependencies]
+# Pinned: the rev is part of `cjixel --version`, which goes into the cache key.
+jixel = { git = "https://github.com/awxkee/jixel", rev = "b45195a" }
+png = "0.18"
+
+[profile.release]
+lto = "thin"

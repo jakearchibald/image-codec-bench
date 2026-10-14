@@ -47,6 +47,8 @@ export function encodeParams(job) {
     effort: job.effort,
     depth: job.depth,
   };
+  // jixel only, so no other codec's keys change.
+  if (job.codec === 'jixel') params.patches = Boolean(job.patches);
   if (job.codec === 'avif') {
     params.yuv = job.yuv;
     params.qalpha = job.qalpha === 'match' ? job.quality : Number(job.qalpha);
@@ -157,6 +159,7 @@ function depthPart(job, format) {
 export function bitstreamName(job) {
   const parts = [job.codec, `q${job.quality}`, `e${job.effort}`, ...depthPart(job, (d) => `d${d}`)];
   if (job.codec === 'avif') parts.push(`yuv${job.yuv}`);
+  if (job.patches) parts.push('patches');
   if (job.hdrMode && job.hdrMode !== 'gainmap') parts.push(job.hdrMode);
   return `${parts.join('-')}.${getCodec(job.codec).extension}`;
 }
@@ -165,6 +168,7 @@ export function bitstreamName(job) {
 function seriesDisplayName(s) {
   const parts = [s.codec, `e${s.effort}`, ...depthPart(s, (d) => `d${d}`)];
   if (s.yuv) parts.push(`yuv${s.yuv}`);
+  if (s.patches) parts.push('patches');
   if (s.hdrMode && s.hdrMode !== 'gainmap') parts.push(s.hdrMode);
   return parts.join('-');
 }
@@ -227,6 +231,7 @@ export async function calibrate({
         depth: s.depth,
         yuv: s.yuv ?? undefined,
         qalpha: s.qalpha ?? undefined,
+        patches: s.patches ?? undefined,
         threads: mode,
       });
       const { ms } = await exec(encoderFor(codec, reference, s), args);
@@ -299,7 +304,7 @@ export async function encodePhase({
       [
         job.codec,
         `q${job.quality}`,
-        codec.effortLabel?.(job.effort) ?? `e${job.effort}`,
+        codec.effortLabel?.(job.effort, job) ?? `e${job.effort}`,
         ...depthPart(job, (d) => `${d}bit`),
       ].join(' ');
 
@@ -330,6 +335,7 @@ export async function encodePhase({
           depth: job.depth,
           yuv: job.yuv ?? undefined,
           qalpha: job.qalpha ?? undefined,
+          patches: job.patches ?? undefined,
           threads,
         }),
         // Every encode, not just the canonical one, so all timings carry the
@@ -408,7 +414,7 @@ export async function encodePhase({
       seriesId: job.seriesId,
       quality: job.quality,
       effort: job.effort,
-      effortLabel: codec.effortLabel?.(job.effort) ?? String(job.effort),
+      effortLabel: codec.effortLabel?.(job.effort, job) ?? String(job.effort),
       depth: job.depth,
       yuv: job.yuv ?? null,
       hdrMode: job.hdrMode ?? null,

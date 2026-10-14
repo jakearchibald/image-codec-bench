@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { avif, jxl, webp, getCodec, lossyCodecs } from '../src/codecs/index.js';
+import { avif, jixel, jxl, webp, getCodec, lossyCodecs } from '../src/codecs/index.js';
 
 test('avif encode argv carries quality, effort, depth, subsampling', () => {
   const args = avif.buildEncodeArgs({
@@ -74,6 +74,22 @@ test('jxl decode pins bits_per_sample to the reference depth', () => {
   assert.ok(args.includes('--bits_per_sample=8'));
 });
 
+test('jixel encode argv carries quality and speed; -j 0 is every core', () => {
+  const multi = jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', quality: 72.5, effort: 5 });
+  assert.deepEqual(multi, ['r.png', 'o.jxl', '-q', '72.5', '-s', '5', '-j', '0']);
+  const single = jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', quality: 50, effort: 3, threads: 'single' });
+  assert.equal(single[single.indexOf('-j') + 1], '1');
+});
+
+test('jixel decodes through djxl exactly like libjxl output', () => {
+  assert.equal(jixel.extension, 'jxl');
+  assert.equal(jixel.decoder, jxl.decoder);
+  assert.deepEqual(
+    jixel.buildDecodeArgs({ input: 'a.jxl', output: 'a.png' }),
+    jxl.buildDecodeArgs({ input: 'a.jxl', output: 'a.png' }),
+  );
+});
+
 test('webp lossless always passes -exact (finding 6)', () => {
   // Without -exact the round-trip is not bit-exact on fully-transparent
   // pixels, so a "lossless" claim would be false.
@@ -100,6 +116,10 @@ test('effort labels reflect each encoder\'s own scale', () => {
   // avifenc -s counts down (0 slowest); cjxl -e counts up (10 slowest).
   assert.equal(avif.effortLabel(0), 's0');
   assert.equal(jxl.effortLabel(9), 'e9');
+  // jixel speeds count up like cjxl -e, and print jixel's own names.
+  assert.equal(jixel.effortLabel(1), 'ultrafast');
+  assert.equal(jixel.effortLabel(3), 'fast');
+  assert.equal(jixel.effortLabel(6), 'extraslow');
 });
 
 test('lossless sweeps every configured effort level', () => {
@@ -159,4 +179,15 @@ test('every lossy codec implements the shared interface', () => {
 
 test('getCodec rejects an unknown name', () => {
   assert.throws(() => getCodec('heic'), /Unknown codec/);
+});
+
+test('jixel lossless drops -q, and patches is a flag', () => {
+  const args = jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', effort: 6, lossless: true, patches: true });
+  assert.ok(args.includes('--lossless') && args.includes('--patches'));
+  assert.ok(!args.includes('-q'));
+  assert.deepEqual(
+    jixel.losslessConfigs([5, 6], { patches: [false, true] }).map((c) => c.effortLabel),
+    ['slow', 'slow+patches', 'extraslow', 'extraslow+patches'],
+  );
+  assert.equal(jixel.effortLabel(5, { patches: true }), 'slow+patches');
 });

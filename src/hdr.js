@@ -370,8 +370,8 @@ export async function prepareHdrReference({ hdrInput, hdrBytes, sdrInput, sdrByt
     strippedChunks: [],
     resized: false,
     hdr,
-    // AVIF builds a gain-map image from both; JXL encodes the HDR PNG.
-    encodeInputs: { avif: { sdr: sdrInput, hdr: output }, jxl: output },
+    // AVIF builds a gain-map image from both; JXL (either encoder) encodes the HDR PNG.
+    encodeInputs: { avif: { sdr: sdrInput, hdr: output }, jxl: output, jixel: output },
   };
 }
 

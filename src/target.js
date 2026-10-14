@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { getCodec } from './codecs/index.js';
-import { parseHdrModes, parsePixels, parseYuvModes } from './config.js';
+import { parseHdrModes, parsePatchModes, parsePixels, parseYuvModes } from './config.js';
 import { assertToolchain, doctor, formatDoctor } from './doctor.js';
 import { run as exec } from './exec.js';
 import { checkHdrInput, pqDepthNote, prepareHdrReference } from './hdr.js';
@@ -34,6 +34,8 @@ const OPTIONS = {
   'avif-hdr': { type: 'string' },
   'jxl-effort': { type: 'string', default: '7' },
   'jxl-step': { type: 'string', default: '0.1' },
+  'jixel-effort': { type: 'string', default: '3' },
+  'jixel-patches': { type: 'string', default: 'off' },
   'max-pixels': { type: 'string', default: '0' },
   sdr: { type: 'string' },
   out: { type: 'string', default: 'out' },
@@ -55,7 +57,7 @@ Usage:
 Options:
   -t, --target RANGE         SSIMULACRA2 scores to hit (required; e.g. 60,70,80
                              or 50:90:10)
-  --codecs LIST              avif, jxl (default avif,jxl)
+  --codecs LIST              avif, jxl, jixel (default avif,jxl)
   --avif-speed RANGE         avifenc -s (default 6; 0 is slowest)
   --avif-depth LIST          avifenc -d (default 8; e.g. 8,10)
   --avif-yuv LIST            444 | 422 | 420 | 400, comma-separated (default 444)
@@ -63,15 +65,20 @@ Options:
   --avif-hdr LIST            HDR mode: gainmap | gainmap-hdr | pq, comma-separated
                              (default gainmap), as in src/cli.js
   --jxl-effort RANGE         cjxl -e (default 7)
-  --jxl-step N               cjxl -q search precision (default 0.1; avifenc -q
-                             is integer only)
+  --jxl-step N               cjxl and jixel -q search precision (default 0.1;
+                             avifenc -q is integer only)
+  --jixel-effort RANGE       jixel speed 1-6 (default 3, jixel's default; 6 is
+                             slowest)
+  --jixel-patches LIST       off | on | off,on (default off)
   --max-pixels N             downscale source to fit N pixels first (e.g. 2MP;
                              not available for HDR input)
   --sdr FILE                 HDR mode: the input is an HDR (PQ) PNG and FILE is the
                              SDR rendition, used as the AVIF gain map's base.
                              Targets are then PU21 SSIMULACRA2 scores, which are
                              not on the same scale as SDR ones
-  --out DIR                  files go in DIR/<image>-targets (default out)
+  --out DIR                  files go in DIR/<image>-targets (default out). An
+                             existing targets.json there is added to: rows for
+                             other settings are kept, rows for these replaced
   --concurrency N            settings searched in parallel (default 1)
   --quiet                    only print the results table
   -h, --help                 this text
@@ -82,9 +89,9 @@ Examples:
   node src/target.js photo-hdr.png --sdr photo-sdr.png -t 60,70 --avif-depth 10 --avif-hdr gainmap,pq
 `;
 
-/** Quality grid searched per codec: avifenc -q is integer, cjxl -q is not. */
+/** Quality grid searched per codec: avifenc -q is integer, cjxl's and jixel's are not. */
 function qualityGrid(codecName, config) {
-  return codecName === 'jxl'
+  return codecName === 'jxl' || codecName === 'jixel'
     ? { min: 0, max: 100, step: config.jxlStep }
     : { min: 0, max: 100, step: 1 };
 }
@@ -103,7 +110,7 @@ function resolveConfig(values, positionals) {
 
   const codecs = values.codecs.split(',').map((c) => c.trim()).filter(Boolean);
   for (const name of codecs) {
-    if (name !== 'avif' && name !== 'jxl') throw new Error(`--codecs takes avif and/or jxl (got ${name})`);
+    if (!['avif', 'jxl', 'jixel'].includes(name)) throw new Error(`--codecs takes avif, jxl and/or jixel (got ${name})`);
   }
 
   const config = {
@@ -126,6 +133,12 @@ function resolveConfig(values, positionals) {
       depth: [8],
       quality: [],
     },
+    jixel: {
+      effort: parseRange(values['jixel-effort'], { integer: true }),
+      depth: [8],
+      patches: parsePatchModes(values['jixel-patches']),
+      quality: [],
+    },
     jxlStep: Number(values['jxl-step']),
     maxPixels: parsePixels(values['max-pixels']),
     // HDR mode (src/hdr.js): the input is a PQ PNG and this is the SDR
@@ -146,6 +159,9 @@ function resolveConfig(values, positionals) {
   }
   for (const e of config.jxl.effort) {
     if (e < 1 || e > 10) throw new Error(`cjxl -e out of range: ${e} (expected 1..10)`);
+  }
+  for (const s of config.jixel.effort) {
+    if (s < 1 || s > 6) throw new Error(`jixel speed out of range: ${s} (expected 1..6)`);
   }
   if (!(config.jxlStep > 0)) throw new Error('--jxl-step must be greater than zero');
   if (!Number.isInteger(config.concurrency) || config.concurrency < 1) {
@@ -177,7 +193,7 @@ async function main(argv) {
     );
   }
 
-  const health = await doctor({ hdr: config.hdr, log });
+  const health = await doctor({ hdr: config.hdr, codecs: config.codecs, log });
   log(`${formatDoctor(health)}\n`);
   assertToolchain(health);
 
@@ -206,6 +222,7 @@ async function main(argv) {
     const encodes = {
       avif: `AVIF as ${config.avif.hdrModes.join(', ')}`,
       jxl: 'JXL as PQ',
+      jixel: 'jixel as PQ',
     };
     log(
       `HDR: PQ, ${hdr.primariesName} primaries, peak ${hdr.peakNits.toFixed(0)} nits; SDR PNG ` +
@@ -241,6 +258,7 @@ async function main(argv) {
           depth: s.depth,
           yuv: s.yuv ?? undefined,
           qalpha: s.qalpha ?? undefined,
+          patches: s.patches ?? undefined,
           threads: CANONICAL_THREADS,
         }),
       );
@@ -262,7 +280,7 @@ async function main(argv) {
       const hit = await searchQuality({ ...qualityGrid(s.codec, config), target, probe, known });
       if (!hit) {
         log(`  ${s.id}: can't reach ${target} (q100 scores ${known.get(100).toFixed(2)})`);
-        found.push({ codec: s.codec, effort: s.effort, depth: s.depth, yuv: s.yuv, hdrMode: s.hdrMode, target, file: null });
+        found.push({ ...settingsOf(s), target, file: null });
         continue;
       }
       const job = jobAt(hit.quality);
@@ -270,11 +288,7 @@ async function main(argv) {
       const output = path.join(outDir, file);
       await copyFile(path.join(tempDir, bitstreamName(job)), output);
       found.push({
-        codec: s.codec,
-        effort: s.effort,
-        depth: s.depth,
-        yuv: s.yuv,
-        hdrMode: s.hdrMode,
+        ...settingsOf(s),
         target,
         quality: hit.quality,
         score: hit.score,
@@ -285,14 +299,55 @@ async function main(argv) {
     return found;
   })).flat();
 
-  await writeFile(
-    path.join(outDir, 'targets.json'),
-    `${JSON.stringify({ input: config.input, reference, versions: health.versions, results: rows }, null, 2)}\n`,
-  );
+  const jsonPath = path.join(outDir, 'targets.json');
+  const merged = mergeTargets(await readJson(jsonPath), { input: config.input, reference, versions: health.versions, results: rows });
+  await writeFile(jsonPath, `${JSON.stringify(merged, null, 2)}\n`);
   await rm(tempDir, { recursive: true, force: true });
 
-  process.stdout.write(`\n${formatRows(rows)}\n\nFiles: ${outDir}\n`);
+  const kept = merged.results.length - rows.length;
+  process.stdout.write(
+    `\n${formatRows(rows)}\n\nFiles: ${outDir}\n` +
+      (kept > 0 ? `targets.json also keeps ${kept} row(s) from earlier runs with other settings.\n` : ''),
+  );
   return 0;
+}
+
+/** What identifies a setting in targets.json. `patches` only exists for jixel. */
+function settingsOf(s) {
+  const settings = { codec: s.codec, effort: s.effort, depth: s.depth, yuv: s.yuv, hdrMode: s.hdrMode };
+  if (s.codec === 'jixel') settings.patches = Boolean(s.patches);
+  return settings;
+}
+
+const rowId = (r) =>
+  JSON.stringify([r.codec, r.effort, r.depth, r.yuv ?? null, r.hdrMode ?? null, r.patches ?? null, r.target]);
+
+async function readJson(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/**
+ * Add this run to an existing targets.json, so a run with only new settings
+ * (say --codecs jixel) doesn't throw away slow searches done before. Rows for
+ * settings this run searched are replaced; the rest are kept. Only for the same
+ * reference pixels: a changed image or --max-pixels starts over.
+ */
+export function mergeTargets(previous, current) {
+  if (!previous || previous.reference?.width !== current.reference.width ||
+      previous.reference?.height !== current.reference.height || previous.input !== current.input) {
+    return current;
+  }
+  const replaced = new Set(current.results.map(rowId));
+  return {
+    ...current,
+    versions: { ...previous.versions, ...current.versions },
+    results: [...previous.results.filter((r) => !replaced.has(rowId(r))), ...current.results],
+  };
 }
 
 function formatRows(rows) {
@@ -302,7 +357,7 @@ function formatRows(rows) {
       String(r.target),
       r.file ? r.score.toFixed(2) : '--',
       r.file ? r.bytes.toLocaleString('en-US') : '--',
-      r.file ?? `unreachable (${[r.codec, `e${r.effort}`, r.yuv && `yuv${r.yuv}`, r.hdrMode].filter(Boolean).join('-')})`,
+      r.file ?? `unreachable (${[r.codec, `e${r.effort}`, r.yuv && `yuv${r.yuv}`, r.patches && 'patches', r.hdrMode].filter(Boolean).join('-')})`,
     ]),
   ];
   const widths = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));

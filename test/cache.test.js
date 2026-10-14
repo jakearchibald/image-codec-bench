@@ -129,3 +129,20 @@ test('hashFileBytes and shortHash are deterministic', () => {
   assert.notEqual(hashFileBytes(buffer), hashFileBytes(Buffer.from('other bytes')));
   assert.equal(shortHash('abc').length, 8);
 });
+
+test('cjixel keys only jixel jobs, so adding jixel to a run re-keys nothing else', () => {
+  const versions = { avifenc: '1.4.2', cjxl: '0.12.0' };
+  const withJixel = { ...versions, cjixel: 'cjixel: jixel 0.4.0 (git b45195a)' };
+  const key = (codec, v) => jobKey({ referenceHash: 'r', codec, params: { quality: 50 }, versions: v });
+  assert.equal(key('avif', withJixel), key('avif', versions));
+  assert.equal(key('jxl', withJixel), key('jxl', versions));
+  // ...but a jixel rev bump does re-key jixel's own jobs.
+  assert.notEqual(key('jixel', withJixel), key('jixel', { ...withJixel, cjixel: 'cjixel: jixel 0.4.0 (git 0000000)' }));
+});
+
+test('patches is in jixel cache keys only', () => {
+  const base = { quality: 50, effort: 5, depth: 8 };
+  assert.equal(encodeParams({ ...base, codec: 'jixel', patches: true }).patches, true);
+  assert.equal(encodeParams({ ...base, codec: 'jixel' }).patches, false);
+  assert.ok(!('patches' in encodeParams({ ...base, codec: 'jxl', patches: null })));
+});

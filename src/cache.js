@@ -21,12 +21,24 @@ function stableStringify(value) {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
 }
 
+// Tools only one codec runs, and only when asked for. They key that codec's
+// jobs alone: otherwise adding jixel to a run would re-key, and re-encode,
+// every AVIF and cjxl job already measured.
+const CODEC_ONLY_TOOLS = { cjixel: 'jixel' };
+
+function versionsFor(codec, versions) {
+  if (!versions) return versions;
+  return Object.fromEntries(
+    Object.entries(versions).filter(([tool]) => (CODEC_ONLY_TOOLS[tool] ?? codec) === codec),
+  );
+}
+
 /**
  * Hash identifying one job's result. `extra` carries anything else that
  * changes the encoder's output or the measurement's meaning.
  */
 export function jobKey({ referenceHash, codec, params, versions, extra = {} }) {
-  const payload = stableStringify({ referenceHash, codec, params, versions, extra });
+  const payload = stableStringify({ referenceHash, codec, params, versions: versionsFor(codec, versions), extra });
   return createHash('sha256').update(payload).digest('hex').slice(0, 24);
 }
 

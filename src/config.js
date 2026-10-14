@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DEFAULT_TARGETS, parseDropTargets, parseTargets } from './browsers.js';
-import { avif, jxl, webp } from './codecs/index.js';
+import { avif, jixel, jxl, webp } from './codecs/index.js';
 import { parseRange } from './schedule.js';
 
 export const OPTIONS = {
@@ -22,6 +22,10 @@ export const OPTIONS = {
 
   'jxl-quality': { type: 'string' },
   'jxl-effort': { type: 'string' },
+
+  'jixel-quality': { type: 'string' },
+  'jixel-effort': { type: 'string' },
+  'jixel-patches': { type: 'string' },
 
   'webp-effort': { type: 'string' },
 
@@ -109,6 +113,19 @@ export function parseYuvModes(spec) {
 }
 
 /**
+ * Parse `--jixel-patches`: off, on, or both (`off,on`), each its own series.
+ * Returned as booleans in canonical order (off first), deduped.
+ */
+export function parsePatchModes(spec) {
+  const modes = String(spec).split(',').map((m) => m.trim()).filter((m) => m.length > 0);
+  if (modes.length === 0) throw new Error('--jixel-patches needs at least one of off, on');
+  for (const mode of modes) {
+    if (mode !== 'off' && mode !== 'on') throw new Error(`--jixel-patches takes off and/or on (got ${mode})`);
+  }
+  return [false, true].filter((on) => modes.includes(on ? 'on' : 'off'));
+}
+
+/**
  * How AVIF can carry HDR, in canonical order: SDR base + gain map up to HDR,
  * HDR base + gain map down to SDR, or plain PQ.
  */
@@ -177,7 +194,7 @@ export async function resolveConfig(values, positionals) {
     .filter((c) => c.length > 0);
 
   for (const name of codecNames) {
-    if (name !== 'avif' && name !== 'jxl') {
+    if (name !== 'avif' && name !== 'jxl' && name !== 'jixel') {
       throw new Error(
         `Codec '${name}' is not part of the lossy sweep (plan.md §11: WebP is lossless-only).`,
       );
@@ -207,6 +224,15 @@ export async function resolveConfig(values, positionals) {
       quality: parseRange(pick('jxl-quality', 'jxlQuality', rangeSpec(jxl.defaults.quality))),
       effort: parseRange(pick('jxl-effort', 'jxlEffort', jxl.defaults.effort.join(',')), { integer: true }),
       depth: [8],
+    },
+
+    // A second JPEG XL encoder (src/codecs/jixel.js). Only swept when --codecs
+    // names it; its -q is jixel's own scale, close to but not cjxl's.
+    jixel: {
+      quality: parseRange(pick('jixel-quality', 'jixelQuality', rangeSpec(jixel.defaults.quality))),
+      effort: parseRange(pick('jixel-effort', 'jixelEffort', jixel.defaults.effort.join(',')), { integer: true }),
+      depth: [8],
+      patches: parsePatchModes(pick('jixel-patches', 'jixelPatches', 'off')),
     },
 
     // WebP appears in the lossless suite only, so it has an effort axis and
@@ -309,6 +335,12 @@ function validate(config) {
   for (const e of config.jxl.effort) {
     if (e < 1 || e > 10) throw new Error(`cjxl -e out of range: ${e} (expected 1..10)`);
   }
+  for (const q of config.jixel.quality) {
+    if (q < 0 || q > 100) throw new Error(`jixel -q out of range: ${q} (expected 0..100)`);
+  }
+  for (const s of config.jixel.effort) {
+    if (s < 1 || s > 6) throw new Error(`jixel speed out of range: ${s} (expected 1..6)`);
+  }
   for (const z of config.webp.effort) {
     if (z < 0 || z > 9) throw new Error(`cwebp -z out of range: ${z} (expected 0..9)`);
   }
@@ -333,9 +365,14 @@ Options:
 
   --jxl-quality RANGE        cjxl -q     (default 15:90:5)
   --jxl-effort RANGE         cjxl -e     (default 7-10)
+  --jixel-quality RANGE      jixel -q    (default 15:95:5; only with --codecs jixel)
+  --jixel-effort RANGE       jixel speed 1-6: ultrafast, fastest, fast, medium,
+                             slow, extraslow (default 3,5,6)
+  --jixel-patches LIST       off | on | off,on: jixel's patch dictionary, each
+                             setting its own series (default off)
   --webp-effort RANGE        cwebp -z, lossless only (default 0-9)
 
-  --codecs LIST              lossy sweep codecs (default avif,jxl)
+  --codecs LIST              lossy sweep codecs: avif, jxl, jixel (default avif,jxl)
   --timing MODES             single,multi,none (default both)
   --no-timing                same as --timing none: encode each job once and
                              skip timing entirely. Much faster when you only

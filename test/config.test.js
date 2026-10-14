@@ -135,6 +135,20 @@ test('--avif-qalpha accepts a fixed number as well as match', async () => {
   assert.equal(config.avif.qalpha, '90');
 });
 
+test('jixel is opt-in, with its own quality and speed axes', async () => {
+  const off = await resolve(['p.png']);
+  assert.deepEqual(off.codecs, ['avif', 'jxl']);
+  const on = await resolve(['p.png', '--codecs', 'avif,jxl,jixel']);
+  assert.deepEqual(on.codecs, ['avif', 'jxl', 'jixel']);
+  assert.equal(on.jixel.quality.at(-1), 95);
+  assert.deepEqual(on.jixel.effort, [3, 5, 6]);
+  const custom = await resolve(['p.png', '--codecs', 'jixel', '--jixel-quality', '50,92.5', '--jixel-effort', '1-6']);
+  assert.deepEqual(custom.jixel.quality, [50, 92.5]);
+  assert.deepEqual(custom.jixel.effort, [1, 2, 3, 4, 5, 6]);
+  await assert.rejects(resolve(['p.png', '--jixel-effort', '7']), /jixel speed out of range/);
+  await assert.rejects(resolve(['p.png', '--jixel-quality', '101']), /jixel -q out of range/);
+});
+
 test('WebP is rejected from the lossy sweep (it is lossless-only here)', async () => {
   await assert.rejects(resolve(['p.png', '--codecs', 'avif,webp']), /not part of the lossy sweep/);
 });
@@ -209,4 +223,10 @@ test('--jxl-quality keeps fractional values; cjxl -q accepts them', async () => 
   const { resolveConfig } = await import('../src/config.js');
   const config = await resolveConfig({ 'jxl-quality': '17.5:25.5:4' }, ['x.png']);
   assert.deepEqual(config.jxl.quality, [17.5, 21.5, 25.5]);
+});
+
+test('--jixel-patches takes off, on or both, as one series each', async () => {
+  assert.deepEqual((await resolve(['p.png'])).jixel.patches, [false]);
+  assert.deepEqual((await resolve(['p.png', '--jixel-patches', 'on,off'])).jixel.patches, [false, true]);
+  await assert.rejects(resolve(['p.png', '--jixel-patches', 'yes']), /--jixel-patches takes off and\/or on/);
 });

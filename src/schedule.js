@@ -95,21 +95,26 @@ export function buildSeries(config) {
     const yuvs = toList(codecConfig.yuv);
     // HDR runs only: how AVIF carries the HDR (gain map, or PQ like JXL).
     const hdrModes = config.hdr && codecConfig.hdrModes ? codecConfig.hdrModes : [null];
+    // jixel only: patch dictionary off/on. Null for everything else.
+    const patchModes = toList(codecConfig.patches);
     for (const hdrMode of hdrModes) {
       for (const depth of depths) {
         for (const yuv of yuvs) {
           for (const effort of codecConfig.effort) {
-            series.push({
-              id: seriesId(codecName, effort, depth, yuv, hdrMode),
-              codec: codecName,
-              effort,
-              depth,
-              yuv,
-              hdrMode,
-              qalpha: codecConfig.qalpha ?? null,
-              hdr: Boolean(config.hdr),
-              qualities: bisectionOrder(codecConfig.quality),
-            });
+            for (const patches of patchModes) {
+              series.push({
+                id: seriesId(codecName, effort, depth, yuv, hdrMode, patches),
+                codec: codecName,
+                effort,
+                depth,
+                yuv,
+                hdrMode,
+                patches,
+                qalpha: codecConfig.qalpha ?? null,
+                hdr: Boolean(config.hdr),
+                qualities: bisectionOrder(codecConfig.quality),
+              });
+            }
           }
         }
       }
@@ -124,9 +129,10 @@ function toList(value) {
   return Array.isArray(value) ? value : [value];
 }
 
-export function seriesId(codec, effort, depth, yuv, hdrMode = null) {
+export function seriesId(codec, effort, depth, yuv, hdrMode = null, patches = null) {
   const parts = [codec, `e${effort}`, `d${depth}`];
   if (yuv) parts.push(`yuv${yuv}`);
+  if (patches) parts.push('patches');
   // Gain map is the original HDR mode, so it keeps the plain id: series
   // stored before the other modes existed still group with new results.
   if (hdrMode && hdrMode !== 'gainmap') parts.push(hdrMode);
@@ -153,6 +159,7 @@ export function interleave(series) {
         qalpha: s.qalpha,
         hdr: s.hdr,
         hdrMode: s.hdrMode,
+        patches: s.patches,
         round,
       });
     }

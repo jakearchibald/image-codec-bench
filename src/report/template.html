@@ -583,6 +583,7 @@
         ["Machine", `${run.machine.cpu} (${run.machine.cores} logical cores)`],
         ["avifenc / avifdec", run.versions.avifenc ?? "—"],
         ["cjxl / djxl", run.versions.cjxl ?? "—"],
+        ...(run.versions.cjixel ? [["jixel (tools/cjixel)", run.versions.cjixel.replace(/^cjixel: /, "")]] : []),
         ["cwebp", run.versions.cwebp ?? "not installed"],
         ["ssimulacra2", run.versions.ssimulacra2 ?? "—"],
         ...(run.config.timing.length
@@ -679,12 +680,13 @@
       const colourOf = new Map(
         seriesIds.map((id, i) => [id, PALETTE[i % PALETTE.length]]),
       );
-      // AVIF solid, JXL dashed, so the two codecs stay distinguishable even where
-      // colours run out.
+      // AVIF solid, JXL dashed (jixel dash-dot), so the codecs stay
+      // distinguishable even where colours run out.
       // AVIF HDR modes (--avif-hdr) get their own dash patterns, so they read
       // apart from each other and from JXL (dashed) even where colours repeat.
       const dashOf = (id) =>
         id.startsWith("jxl") ? [6, 3]
+          : id.startsWith("jixel") ? [6, 2, 1, 2]
           : id.endsWith("-pq") ? [2, 3]
             : id.endsWith("-gainmap-hdr") ? [10, 3, 2, 3]
               : [];
@@ -1080,24 +1082,26 @@
       }
 
       /* ------------------------------------------- charts 4 & 5: lossless curves */
-      // Lossless rows form one line per codec, ordered by effort. The lossy
-      // series helpers don't apply: these are keyed by codec, not seriesId.
+      // Lossless rows form one line per codec (jixel: per patches setting),
+      // ordered by effort. The lossy series helpers don't apply: these are
+      // keyed by codec, not seriesId.
       const losslessPoints = lossless.filter((row) => !row.skipped && !row.isSource);
-      const losslessCodecs = [...new Set(losslessPoints.map((row) => row.codec))].sort();
+      const losslessLine = (row) => `${row.codec}${row.patches ? "+patches" : ""}`;
+      const losslessCodecs = [...new Set(losslessPoints.map(losslessLine))].sort();
       const losslessSource = lossless.find((row) => row.isSource);
 
       function losslessDatasets(xPick) {
-        return losslessCodecs.map((codec, i) => ({
-          label: codec.toUpperCase(),
+        return losslessCodecs.map((line, i) => ({
+          label: line.toUpperCase(),
           data: losslessPoints
-            .filter((row) => row.codec === codec)
+            .filter((row) => losslessLine(row) === line)
             .map((row) => ({ x: xPick(row), y: row.bytes, row }))
             .filter((point) => point.x != null)
             // Ordered along x so the connecting line doesn't zigzag.
             .sort((a, b) => a.x - b.x),
           borderColor: PALETTE[i % PALETTE.length],
           backgroundColor: PALETTE[i % PALETTE.length],
-          borderDash: codec === "jxl" ? [6, 3] : [],
+          borderDash: line === "jxl" ? [6, 3] : line.startsWith("jixel") ? [6, 2, 1, 2] : [],
           showLine: true,
           pointRadius: 4,
           pointHoverRadius: 7,
@@ -1737,7 +1741,7 @@
 
       (async function initCompare() {
         const jxlOk = await probeJxl();
-        if (!jxlOk && variants.some((v) => v.codec === "jxl")) {
+        if (!jxlOk && variants.some((v) => v.codec === "jxl" || v.codec === "jixel")) {
           document.getElementById("jxl-banner").hidden = false;
           document.getElementById("jxl-flag-hint").textContent = jxlProbe.hint;
         }

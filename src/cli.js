@@ -79,6 +79,7 @@ async function main(argv) {
   //    comparable within one toolchain version (plan.md §1).
   const health = await doctor({
     hdr: config.hdr,
+    codecs: config.codecs,
     log: (message) => {
       if (!config.quiet) process.stdout.write(`${message}\n`);
     },
@@ -403,26 +404,26 @@ async function main(argv) {
     let stale = all;
 
     if (!config.force) {
-      // Cheap pre-filter on the stored version: if every row already carries a
-      // measurement, open one short session just to check the version matches.
-      const anyMissing = all.some((entry) => !entry.row.decode?.[name]);
-      if (!anyMissing) {
-        const versions = new Set(all.map((entry) => entry.row.decode[name].browser));
-        const schemas = new Set(all.map((entry) => entry.row.decode[name].schema));
-        if (versions.size === 1 && schemas.size === 1 && schemas.has(DECODE_SCHEMA)) {
-          const probe = await measureDecodeTimes({
-            target,
-            rootDir: runDir,
-            targets: [all[0]].map(({ key, url }) => ({ key, url })),
-            repeats: 1,
-            warmup: 0,
-          }).catch(() => null);
-          if (!probe) {
-            // Can't confirm the version, so fall through and re-measure, which
-            // will surface the real error with its setup hint.
-            measuredVersion = null;
-          } else {
-          if (probe.version === [...versions][0]) {
+      // If any row already carries a measurement, open one short session to
+      // learn the browser version. Rows measured in that version (and schema)
+      // are kept, so adding a codec to a run times only the new files.
+      const current = (entry, version) =>
+        entry.row.decode?.[name]?.schema === DECODE_SCHEMA && entry.row.decode[name].browser === version;
+      const measuredOne = all.find((entry) => entry.row.decode?.[name]?.schema === DECODE_SCHEMA);
+      if (measuredOne) {
+        const probe = await measureDecodeTimes({
+          target,
+          rootDir: runDir,
+          targets: [measuredOne].map(({ key, url }) => ({ key, url })),
+          repeats: 1,
+          warmup: 0,
+        }).catch(() => null);
+        // Without a probe the version can't be confirmed, so fall through and
+        // re-measure, which will surface the real error with its setup hint.
+        if (probe) {
+          measuredVersion = probe.version;
+          stale = all.filter((entry) => !current(entry, probe.version));
+          if (stale.length === 0) {
             browsersUsed[name] = {
               label: target.label,
               version: probe.version,
@@ -435,14 +436,16 @@ async function main(argv) {
             }
             continue;
           }
-          measuredVersion = probe.version;
-          }
         }
       }
     }
 
     if (!config.quiet) {
-      process.stdout.write(`Decode timing ${all.length} image(s) in ${target.label}...\n`);
+      const kept = all.length - stale.length;
+      process.stdout.write(
+        `Decode timing ${stale.length} image(s) in ${target.label}` +
+          `${kept > 0 ? ` (${kept} already measured in ${measuredVersion})` : ''}...\n`,
+      );
     }
 
     let measured;
@@ -691,6 +694,7 @@ function serialisableConfig(config) {
     codecs: config.codecs,
     avif: config.avif,
     jxl: config.jxl,
+    jixel: config.jixel,
     webp: config.webp,
     timing: config.timing,
     repeats: config.repeats,

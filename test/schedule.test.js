@@ -245,3 +245,14 @@ test('a codec with no subsampling axis still gets exactly one series', () => {
   assert.deepEqual(series.map((s) => s.id), ['jxl-e7-d8', 'jxl-e9-d8']);
   assert.deepEqual(series.map((s) => s.yuv), [null, null]);
 });
+
+test('jixel patches is an axis: one series per setting, with its own id', () => {
+  const series = buildSeries({
+    codecs: ['jixel', 'jxl'],
+    jixel: { quality: [50], effort: [5], depth: [8], patches: [false, true] },
+    jxl: { quality: [50], effort: [7], depth: [8] },
+  });
+  assert.deepEqual(series.map((s) => s.id), ['jixel-e5-d8', 'jixel-e5-d8-patches', 'jxl-e7-d8']);
+  assert.equal(series[2].patches, null);
+  assert.deepEqual(interleave(series).map((j) => j.patches), [false, true, null]);
+});
