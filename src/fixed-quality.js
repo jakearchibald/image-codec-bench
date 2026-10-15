@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { getCodec } from './codecs/index.js';
-import { parsePatchModes, parsePixels, parseYuvModes } from './config.js';
+import { parseAlphaDistance, parsePatchModes, parsePixels, parseYuvModes } from './config.js';
 import { assertToolchain, doctor, formatDoctor } from './doctor.js';
 import { run as exec } from './exec.js';
 import { hasGainMap, isHdrPng } from './hdr.js';
@@ -32,6 +32,7 @@ const OPTIONS = {
   'avif-qalpha': { type: 'string', default: 'match' },
   'jxl-quality': { type: 'string', default: '75' },
   'jxl-effort': { type: 'string', default: '1-10' },
+  'jxl-alpha-distance': { type: 'string', default: 'match' },
   'jixel-quality': { type: 'string', default: '75' },
   'jixel-effort': { type: 'string', default: '1-6' },
   'jixel-patches': { type: 'string', default: 'off' },
@@ -64,6 +65,8 @@ Options:
   --avif-qalpha VALUE        'match' to track -q, or 0..100 (default match)
   --jxl-quality N            cjxl -q (default 75)
   --jxl-effort RANGE         cjxl -e (default 1-10)
+  --jxl-alpha-distance VALUE cjxl -a: 'match' to use the distance -q maps to,
+                             or 0..25 (default match; images with alpha only)
   --jixel-quality N          jixel -q (default 75)
   --jixel-effort RANGE       jixel speed (default 1-6; 6 is slowest)
   --jixel-patches LIST       off | on | off,on (default off)
@@ -103,6 +106,7 @@ function resolveConfig(values, positionals) {
       quality: [Number(values['jxl-quality'])],
       effort: parseRange(values['jxl-effort'], { integer: true }),
       depth: [8],
+      alphaDistance: parseAlphaDistance(values['jxl-alpha-distance']),
     },
     jixel: {
       quality: [Number(values['jixel-quality'])],
@@ -281,6 +285,8 @@ async function main(argv) {
           depth: s.depth,
           yuv: s.yuv ?? undefined,
           qalpha: s.qalpha ?? undefined,
+          // Series span every image, so whether alpha applies is per image.
+          alphaDistance: reference.hasAlpha ? config.jxl.alphaDistance : undefined,
           patches: s.patches ?? undefined,
           threads: CANONICAL_THREADS,
         }),

@@ -12,6 +12,14 @@
 //    only. TIFF goes through tifffile (pure Python) instead, so images are
 //    handed over as TIFF.
 //
+// It has no notion of transparency either, so an image with alpha is
+// composited onto a dark and a light flat grey and scored on each, keeping the
+// worse JOD: an error often shows on only one background (a dark fringe is
+// invisible on black), and averaging would halve it. Flat, because texture
+// would mask errors. Not pure black, which sits at the display's black level
+// where almost nothing is visible. Blending is on the sRGB-encoded values, as
+// browsers do it, rather than in linear light. SDR only.
+//
 // Scores are JOD ("just-objectionable differences"): 10 means no visible
 // difference, and each unit down is a difference 75% of observers would pick.
 
@@ -119,12 +127,16 @@ export function displayModel(hdr) {
   };
 }
 
+/** Backgrounds an image with alpha is composited onto, as ImageMagick colours. */
+export const ALPHA_BACKGROUNDS = { dark: 'gray(10%)', light: 'gray(90%)' };
+
 /**
  * Everything a scoring job needs: the tool, the display, and the config files
  * that define it (written to `dir`). `id` identifies the measurement, so a
  * stored JOD is only reused if it came from the same version and display.
  */
-export async function prepareCvvdp({ probe, hdr, dir }) {
+export async function prepareCvvdp({ probe, hdr, alpha = false, dir }) {
+  if (alpha && hdr) throw new Error('ColorVideoVDP scoring of HDR images with alpha is not supported');
   const display = displayModel(hdr);
   const displayFile = path.join(dir, 'display_models_bench.json');
   const coloursFile = path.join(dir, 'color_spaces_bench.json');
@@ -136,7 +148,8 @@ export async function prepareCvvdp({ probe, hdr, dir }) {
     display: display.id,
     displayName: display.model.name,
     configPaths: [displayFile, coloursFile],
-    id: `${probe.version}|${display.id}`,
+    backgrounds: alpha ? ALPHA_BACKGROUNDS : null,
+    id: `${probe.version}|${display.id}${alpha ? '|alpha-min-10-90' : ''}`,
   };
 }
 
@@ -147,10 +160,45 @@ export function isCurrent(stored, cvvdp) {
 
 /**
  * PNG -> TIFF at the same depth, pixel values untouched. -strip matters: with
- * no profile ImageMagick converts nothing, so PQ codes stay PQ codes.
+ * no profile ImageMagick converts nothing, so PQ codes stay PQ codes. With a
+ * `background`, alpha is composited onto it (on the encoded values) and dropped.
  */
-export async function toTiff(png, tif) {
-  await run('magick', [png, '-strip', '-compress', 'none', tif]);
+export async function toTiff(png, tif, background = null) {
+  const flatten = background ? ['-background', background, '-alpha', 'remove', '-alpha', 'off'] : [];
+  await run('magick', [png, ...flatten, '-strip', '-compress', 'none', tif]);
+}
+
+/**
+ * The reference as the TIFFs each decode is scored against: one, or one per
+ * alpha background. Keys match `cvvdp.backgrounds`.
+ */
+export async function referenceTiffs(cvvdp, png, dir) {
+  if (!cvvdp.backgrounds) {
+    const tif = path.join(dir, 'reference.tif');
+    await toTiff(png, tif);
+    return { opaque: tif };
+  }
+  const tiffs = {};
+  for (const [name, background] of Object.entries(cvvdp.backgrounds)) {
+    tiffs[name] = path.join(dir, `reference-${name}.tif`);
+    await toTiff(png, tiffs[name], background);
+  }
+  return tiffs;
+}
+
+/**
+ * One measurement from the per-reference scores: the worst JOD, with each
+ * background's kept alongside when there was more than one.
+ */
+export function combineScores(scores) {
+  const entries = Object.entries(scores);
+  if (entries.length === 1) return entries[0][1];
+  return {
+    jod: Math.min(...entries.map(([, s]) => s.jod)),
+    id: entries[0][1].id,
+    ms: entries.reduce((sum, [, s]) => sum + s.ms, 0),
+    backgrounds: Object.fromEntries(entries.map(([name, s]) => [name, s.jod])),
+  };
 }
 
 /** Parse cvvdp's score: a bare number with --quiet, `cvvdp=9.9682 [JOD]` without. */

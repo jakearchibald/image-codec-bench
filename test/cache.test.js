@@ -74,6 +74,13 @@ test('encodeParams omits AVIF-only fields for JXL', () => {
   assert.deepEqual(Object.keys(params).sort(), ['depth', 'effort', 'quality']);
 });
 
+test('encodeParams keys the JXL alpha distance only when the image has alpha', () => {
+  // Opaque jobs carry no alphaDistance, so their keys are unchanged.
+  assert.equal(encodeParams({ codec: 'jxl', quality: 75, effort: 7, depth: 8, alphaDistance: null }).alphaDistance, undefined);
+  assert.equal(encodeParams({ codec: 'jxl', quality: 75, effort: 7, depth: 8, alphaDistance: 'match' }).alphaDistance, 2.35);
+  assert.equal(encodeParams({ codec: 'jxl', quality: 75, effort: 7, depth: 8, alphaDistance: '0' }).alphaDistance, 0);
+});
+
 test('store round-trips a result and persists it atomically', async () => {
   const { store } = await tempStore();
   await store.put({ key: 'k1', codec: 'avif', score: 80 });

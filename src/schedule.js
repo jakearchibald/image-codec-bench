@@ -111,6 +111,9 @@ export function buildSeries(config) {
                 hdrMode,
                 patches,
                 qalpha: codecConfig.qalpha ?? null,
+                // JXL only, and only when the reference has alpha, so opaque
+                // runs' cache keys are unchanged.
+                alphaDistance: config.alpha ? codecConfig.alphaDistance ?? null : null,
                 hdr: Boolean(config.hdr),
                 qualities: bisectionOrder(codecConfig.quality),
               });
@@ -157,6 +160,7 @@ export function interleave(series) {
         depth: s.depth,
         yuv: s.yuv,
         qalpha: s.qalpha,
+        alphaDistance: s.alphaDistance,
         hdr: s.hdr,
         hdrMode: s.hdrMode,
         patches: s.patches,

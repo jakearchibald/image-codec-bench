@@ -38,6 +38,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cvvdp-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff00b4fbb7a3f6ef94e3958811a848372615d58ab82074084279884b788a6ad7"
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -59,8 +65,12 @@ dependencies = [
 
 [[package]]
 name = "jixel"
-version = "0.4.0"
-source = "git+https://github.com/awxkee/jixel?rev=b45195a#b45195a614008c33460ba92a7228f6e61bf04d4d"
+version = "0.4.2"
+source = "git+https://github.com/awxkee/jixel?rev=f487299#f487299def2b22efe984a4ce319535c4e5761038"
+dependencies = [
+ "cvvdp-lite",
+ "ssimu2-lite",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -100,6 +110,12 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "ssimu2-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43abbe6644fcc293c11eec7ffd755421a5a4cea25ed9882b5e088abcd75d83b5"
 
 [[package]]
 name = "zlib-rs"

@@ -5,6 +5,9 @@
 //
 // Four or five files from one image:
 //  - JXL at -q, and the same with -p (progressive AC and DC passes).
+//  - Optionally (--jixel-speed), jixel at -q and the same with progressive
+//    DC (a squeezed DC frame, every level) and centre-first groups. Its AC
+//    stays in one pass, unlike cjxl -p.
 //  - AVIF at -q, and a two-layer AVIF: a preview image as layer 0, coded at
 //    1/8 scale, then the full image as layer 1. AV1 spatial layers all have the
 //    image's full dimensions (the encoder does the downscale), so the preview
@@ -18,7 +21,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { parseTargets, resolveTarget } from './browsers.js';
-import { avif, jxl } from './codecs/index.js';
+import { avif, jixel, jxl } from './codecs/index.js';
 import { parseDuration, parseYuvModes } from './config.js';
 import { WARMUP_RUNS, measureDecodeTimes, serveDirectory } from './decode.js';
 import { canMeasureMemory, measureSpawnOverhead, run, setToolPath } from './exec.js';
@@ -35,6 +38,8 @@ const OPTIONS = {
   'preview-scale': { type: 'string', default: '8' },
   'jxl-quality': { type: 'string', default: '70' },
   'jxl-effort': { type: 'string', default: '7' },
+  'jixel-quality': { type: 'string', default: '80' },
+  'jixel-speed': { type: 'string' },
   'avif-quality': { type: 'string', default: '50' },
   'avif-preview-quality': { type: 'string' },
   'avif-speed': { type: 'string', default: '6' },
@@ -43,6 +48,7 @@ const OPTIONS = {
   'avif-keyframe-variant': { type: 'boolean' },
   target: { type: 'string', short: 't' },
   'jxl-target': { type: 'string' },
+  'jixel-target': { type: 'string' },
   'avif-target': { type: 'string' },
   'no-match': { type: 'boolean' },
   'jxl-step': { type: 'string', default: '0.1' },
@@ -66,7 +72,8 @@ const OPTIONS = {
 const HELP = `image-codec-bench progressive -- what progressive JXL and layered
 AVIF cost against the same image encoded non-progressively.
 
-For each --jxl-effort: JXL (-q) and JXL -p. For each --avif-speed: AVIF (-q)
+For each --jxl-effort: JXL (-q) and JXL -p. For each --jixel-speed, if given:
+jixel (-q) and jixel with progressive DC, centre first. For each --avif-speed: AVIF (-q)
 and a two-layer AVIF whose layer 0 is --preview coded at 1/--preview-scale
 (plus, with --avif-keyframe-variant, the same with layer 1 as a keyframe).
 Progressive files are compared with the non-progressive file of the same
@@ -88,6 +95,9 @@ Options:
   --preview-scale N          layer 0 scaling denominator (default 8)
   --jxl-quality Q            cjxl -q (default 70)
   --jxl-effort RANGE         cjxl -e, one group each (default 7, cjxl's own)
+  --jixel-speed RANGE        jixel speed 1-6, one group each (default none: no
+                             jixel; 3 is jixel's own). Built from tools/cjixel
+  --jixel-quality Q          jixel -q (default 80)
   --avif-quality Q           avifenc -q, both layers (default 50)
   --avif-preview-quality Q   avifenc -q for layer 0 (default --avif-quality)
   --avif-speed RANGE         avifenc -s, one group each (default 6, avifenc's own)
@@ -98,10 +108,10 @@ Options:
   -t, --target S             search every file's -q for the SSIMULACRA2
                              closest to S, instead of starting from the -q
                              options (they become the search's first guess)
-  --jxl-target S, --avif-target S
+  --jxl-target S, --jixel-target S, --avif-target S
                              the same, for one codec (overrides --target)
   --no-match                 no searching: every file at the -q options
-  --jxl-step N               cjxl -q search precision (default 0.1; avifenc -q
+  --jxl-step N               cjxl and jixel -q search precision (default 0.1; avifenc -q
                              is searched in whole steps)
   --repeats N                timed encodes per file per thread mode (default 5)
   --threads LIST             single, multi (default single,multi)
@@ -157,6 +167,8 @@ function resolveConfig(values, positionals) {
     previewScale: int(values['preview-scale'], '--preview-scale', 1, 16),
     jxlQuality: Number(values['jxl-quality']),
     jxlEfforts: intList(values['jxl-effort'], '--jxl-effort', 1, 10),
+    jixelQuality: Number(values['jixel-quality']),
+    jixelSpeeds: values['jixel-speed'] == null ? [] : intList(values['jixel-speed'], '--jixel-speed', 1, 6),
     avifQuality,
     avifPreviewQuality: values['avif-preview-quality'] == null
       ? avifQuality
@@ -168,6 +180,7 @@ function resolveConfig(values, positionals) {
     match: values['no-match'] !== true,
     targets: {
       jxl: optionalScore(values['jxl-target'] ?? values.target, '--jxl-target'),
+      jixel: optionalScore(values['jixel-target'] ?? values.target, '--jixel-target'),
       avif: optionalScore(values['avif-target'] ?? values.target, '--avif-target'),
     },
     jxlStep: Number(values['jxl-step']),
@@ -188,7 +201,8 @@ function resolveConfig(values, positionals) {
     quiet: values.quiet === true,
   };
   if (!(config.jxlQuality > 0 && config.jxlQuality <= 100)) throw new Error('--jxl-quality must be in (0, 100]');
-  if (!config.match && (config.targets.jxl != null || config.targets.avif != null)) {
+  if (!(config.jixelQuality >= 0 && config.jixelQuality <= 100)) throw new Error('--jixel-quality must be 0..100');
+  if (!config.match && Object.values(config.targets).some((t) => t != null)) {
     throw new Error('--no-match and a target contradict each other');
   }
   if (!(config.jxlStep > 0 && config.jxlStep <= 10)) throw new Error('--jxl-step must be in (0, 10]');
@@ -203,7 +217,7 @@ function resolveConfig(values, positionals) {
 }
 
 /** Layered encoding is recent, so prefer the local libavif build, as HDR mode does. */
-async function toolchain() {
+async function toolchain({ withJixel = false, log = () => {} } = {}) {
   const local = ['avifenc', 'avifdec'].map((name) => path.join(LOCAL_LIBAVIF_DIR, name));
   const isLocal = (await Promise.all(local.map((p) => run('test', ['-x', p], { allowFailure: true }))))
     .every((r) => r.code === 0);
@@ -217,7 +231,15 @@ async function toolchain() {
     avifencPath: isLocal ? local[0] : 'PATH',
     cjxl: (await line('cjxl', ['--version'])).match(/v?(\d+\.\d+\.\d+)/)?.[1] ?? null,
     magick: (await line('magick', ['-version'])).match(/(\d+\.\d+\.\d+(-\d+)?)/)?.[1] ?? null,
+    ...(withJixel
+      ? { cjixel: await line(setJixelPath(await jixel.ensureEncoder({ log })), ['--version']) }
+      : {}),
   };
+}
+
+function setJixelPath(encoderPath) {
+  setToolPath('cjixel', encoderPath);
+  return 'cjixel';
 }
 
 /**
@@ -285,6 +307,32 @@ function variants({ config, reference, preview, dir }) {
         quality: config.jxlQuality,
         get label() { return `JXL -q ${this.quality} -e ${effort} -p`; },
         args: jxlArgs(['-p']),
+      },
+    );
+  }
+
+  for (const speed of config.jixelSpeeds) {
+    const group = `jixel-s${speed}`;
+    const name = jixel.effortLabel(speed);
+    const jixelArgs = (progressive) => function (threads, output = this.path, quality = this.quality) {
+      return jixel.buildEncodeArgs({
+        input: reference.path, output, quality, effort: speed, threads,
+        ...(progressive ? { progressiveDc: true, groupOrder: 'center' } : {}),
+      });
+    };
+    list.push(
+      {
+        id: group, group, effort: speed, codec: jixel, progressive: false, path: file(`${group}.jxl`), command: 'cjixel',
+        quality: config.jixelQuality,
+        get label() { return `jixel -q ${this.quality} ${name}`; },
+        args: jixelArgs(false),
+      },
+      {
+        id: `${group}-progressive`, group, effort: speed, codec: jixel, progressive: true,
+        path: file(`${group}-progressive.jxl`), command: 'cjixel',
+        quality: config.jixelQuality,
+        get label() { return `jixel -q ${this.quality} ${name} progressive DC, centre first`; },
+        args: jixelArgs(true),
       },
     );
   }
@@ -488,8 +536,11 @@ async function main(argv) {
     if (!config.quiet) process.stdout.write(`${message}\n`);
   };
 
-  const versions = await toolchain();
-  log(`${versions.avifenc} (${versions.avifencPath}), cjxl ${versions.cjxl}, magick ${versions.magick}`);
+  const versions = await toolchain({ withJixel: config.jixelSpeeds.length > 0, log });
+  log(
+    `${versions.avifenc} (${versions.avifencPath}), cjxl ${versions.cjxl}, magick ${versions.magick}` +
+      `${versions.cjixel ? `, ${versions.cjixel}` : ''}`,
+  );
 
   const stem = path.basename(config.input, path.extname(config.input));
   const runDir = path.join(config.out, `${stem}-progressive`);
@@ -524,7 +575,7 @@ async function main(argv) {
     for (const group of [...new Set(list.map((x) => x.group))]) {
       const base = list.find((x) => x.group === group && !x.progressive);
       const { codec } = base;
-      const grid = codec === jxl ? { min: 1, max: 100, step: config.jxlStep } : { min: 0, max: 100, step: 1 };
+      const grid = codec === avif ? { min: 0, max: 100, step: 1 } : { min: 1, max: 100, step: config.jxlStep };
       let target = config.targets[codec.name];
       if (target != null) {
         log(`Searching ${base.id} for SSIMULACRA2 ${target}...`);
@@ -705,6 +756,9 @@ async function main(argv) {
       match: config.match,
       targets: config.targets,
       jxl: { quality: config.jxlQuality, efforts: config.jxlEfforts },
+      ...(config.jixelSpeeds.length
+        ? { jixel: { quality: config.jixelQuality, speeds: config.jixelSpeeds, progressiveDc: true, groupOrder: 'center' } }
+        : {}),
       avif: {
         quality: config.avifQuality, previewQuality: config.avifPreviewQuality,
         speeds: config.avifSpeeds, yuv: config.avifYuv, depth: config.avifDepth,
@@ -728,7 +782,7 @@ async function main(argv) {
       // Files are compared within a group: one codec at one effort/speed.
       group: v.group,
       codec: v.codec.name,
-      // cjxl -e or avifenc -s.
+      // cjxl -e, jixel speed (1-6) or avifenc -s.
       effort: v.effort,
       file: path.basename(v.path),
       // The -q this file was encoded at; for the layered AVIF, layer 1's, with

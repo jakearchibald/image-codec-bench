@@ -88,6 +88,14 @@ test('buildSeries expands codec x effort x depth', () => {
   ]);
 });
 
+test('buildSeries gives JXL an alpha distance only when the image has alpha', () => {
+  const withSetting = { ...config, jxl: { ...config.jxl, alphaDistance: 'match' } };
+  const jxlSeries = (c) => buildSeries(c).filter((s) => s.codec === 'jxl');
+  assert.ok(jxlSeries(withSetting).every((s) => s.alphaDistance === null));
+  assert.ok(jxlSeries({ ...withSetting, alpha: true }).every((s) => s.alphaDistance === 'match'));
+  assert.ok(buildSeries({ ...withSetting, alpha: true }).filter((s) => s.codec === 'avif').every((s) => s.alphaDistance === null));
+});
+
 test('buildSeries multiplies out multiple depths', () => {
   const series = buildSeries({
     ...config,

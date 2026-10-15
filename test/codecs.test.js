@@ -63,6 +63,28 @@ test('jxl single-thread uses --num_threads=0 (finding 3)', () => {
   assert.ok(!multi.some((a) => a.startsWith('--num_threads')));
 });
 
+test('jxl distanceFromQuality matches libjxl JxlEncoderDistanceFromQuality', () => {
+  assert.equal(jxl.distanceFromQuality(100), 0);
+  assert.ok(Math.abs(jxl.distanceFromQuality(90) - 1) < 1e-9);
+  assert.ok(Math.abs(jxl.distanceFromQuality(30) - 6.4) < 1e-9);
+  // The quadratic below q30 meets the linear part there.
+  assert.ok(Math.abs(jxl.distanceFromQuality(29.999) - 6.4) < 1e-3);
+  assert.equal(jxl.distanceFromQuality(0), 25);
+});
+
+test('jxl -a: match tracks -q, a number is fixed, and none leaves cjxl lossless', () => {
+  const at = (alphaDistance) => jxl.buildEncodeArgs({
+    input: 'r.png', output: 'o.jxl', quality: 75, effort: 7, alphaDistance,
+  });
+  assert.equal(at('match')[at('match').indexOf('-a') + 1], '2.35');
+  assert.equal(at('1.5')[at('1.5').indexOf('-a') + 1], '1.5');
+  assert.ok(!at(undefined).includes('-a'));
+  const lossless = jxl.buildEncodeArgs({
+    input: 'r.png', output: 'o.jxl', effort: 9, lossless: true, alphaDistance: 'match',
+  });
+  assert.ok(!lossless.includes('-a'));
+});
+
 test('jxl lossless uses -d 0 rather than -q', () => {
   const args = jxl.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', effort: 9, lossless: true });
   assert.equal(args[args.indexOf('-d') + 1], '0');
@@ -190,4 +212,14 @@ test('jixel lossless drops -q, and patches is a flag', () => {
     ['slow', 'slow+patches', 'extraslow', 'extraslow+patches'],
   );
   assert.equal(jixel.effortLabel(5, { patches: true }), 'slow+patches');
+});
+
+test('jixel progressive DC and group order are lossy-only flags', () => {
+  const args = jixel.buildEncodeArgs({
+    input: 'r.png', output: 'o.jxl', quality: 70, effort: 3, progressiveDc: true, groupOrder: 'center',
+  });
+  assert.ok(args.includes('--progressive-dc'));
+  assert.equal(args[args.indexOf('--group-order') + 1], 'center');
+  const plain = jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', quality: 70, effort: 3 });
+  assert.ok(!plain.includes('--progressive-dc') && !plain.includes('--group-order'));
 });

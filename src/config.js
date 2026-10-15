@@ -22,6 +22,7 @@ export const OPTIONS = {
 
   'jxl-quality': { type: 'string' },
   'jxl-effort': { type: 'string' },
+  'jxl-alpha-distance': { type: 'string' },
 
   'jixel-quality': { type: 'string' },
   'jixel-effort': { type: 'string' },
@@ -95,6 +96,17 @@ export const YUV_MODES = ['444', '422', '420', '400'];
  * separate series, so this multiplies the AVIF grid the same way `--avif-depth`
  * does.
  */
+/** --jxl-alpha-distance: 'match' (track -q) or a fixed cjxl -a distance. */
+export function parseAlphaDistance(spec) {
+  const value = String(spec).trim();
+  if (value === 'match') return value;
+  const distance = Number(value);
+  if (value === '' || Number.isNaN(distance) || distance < 0 || distance > 25) {
+    throw new Error(`--jxl-alpha-distance must be 'match' or 0..25 (got ${value})`);
+  }
+  return value;
+}
+
 export function parseYuvModes(spec) {
   const modes = String(spec)
     .split(',')
@@ -224,6 +236,7 @@ export async function resolveConfig(values, positionals) {
       quality: parseRange(pick('jxl-quality', 'jxlQuality', rangeSpec(jxl.defaults.quality))),
       effort: parseRange(pick('jxl-effort', 'jxlEffort', jxl.defaults.effort.join(',')), { integer: true }),
       depth: [8],
+      alphaDistance: parseAlphaDistance(pick('jxl-alpha-distance', 'jxlAlphaDistance', jxl.defaults.alphaDistance)),
     },
 
     // A second JPEG XL encoder (src/codecs/jixel.js). Only swept when --codecs
@@ -365,6 +378,8 @@ Options:
 
   --jxl-quality RANGE        cjxl -q     (default 15:90:5)
   --jxl-effort RANGE         cjxl -e     (default 7-10)
+  --jxl-alpha-distance VALUE cjxl -a: 'match' to use the distance -q maps to,
+                             or 0..25 (default match; images with alpha only)
   --jixel-quality RANGE      jixel -q    (default 15:95:5; only with --codecs jixel)
   --jixel-effort RANGE       jixel speed 1-6: ultrafast, fastest, fast, medium,
                              slow, extraslow (default 3,5,6)

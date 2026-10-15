@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { getCodec } from './codecs/index.js';
-import { parseHdrModes, parsePatchModes, parsePixels, parseYuvModes } from './config.js';
+import { parseAlphaDistance, parseHdrModes, parsePatchModes, parsePixels, parseYuvModes } from './config.js';
 import { assertToolchain, doctor, formatDoctor } from './doctor.js';
 import { run as exec } from './exec.js';
 import { checkHdrInput, pqDepthNote, prepareHdrReference } from './hdr.js';
@@ -33,6 +33,7 @@ const OPTIONS = {
   'avif-qalpha': { type: 'string', default: 'match' },
   'avif-hdr': { type: 'string' },
   'jxl-effort': { type: 'string', default: '7' },
+  'jxl-alpha-distance': { type: 'string', default: 'match' },
   'jxl-step': { type: 'string', default: '0.1' },
   'jixel-effort': { type: 'string', default: '3' },
   'jixel-patches': { type: 'string', default: 'off' },
@@ -65,6 +66,8 @@ Options:
   --avif-hdr LIST            HDR mode: gainmap | gainmap-hdr | pq, comma-separated
                              (default gainmap), as in src/cli.js
   --jxl-effort RANGE         cjxl -e (default 7)
+  --jxl-alpha-distance VALUE cjxl -a: 'match' to use the distance -q maps to,
+                             or 0..25 (default match; images with alpha only)
   --jxl-step N               cjxl and jixel -q search precision (default 0.1;
                              avifenc -q is integer only)
   --jixel-effort RANGE       jixel speed 1-6 (default 3, jixel's default; 6 is
@@ -131,6 +134,7 @@ function resolveConfig(values, positionals) {
     jxl: {
       effort: parseRange(values['jxl-effort'], { integer: true }),
       depth: [8],
+      alphaDistance: parseAlphaDistance(values['jxl-alpha-distance']),
       quality: [],
     },
     jixel: {
@@ -233,6 +237,7 @@ async function main(argv) {
   }
 
   const metric = reference.hdr ? 'PU21 SSIMULACRA2' : 'SSIMULACRA2';
+  config.alpha = reference.hasAlpha;
   const series = buildSeries(config);
   log(`Searching ${series.length} setting(s) for ${metric} ${config.targets.join(', ')}...\n`);
 
@@ -258,6 +263,7 @@ async function main(argv) {
           depth: s.depth,
           yuv: s.yuv ?? undefined,
           qalpha: s.qalpha ?? undefined,
+          alphaDistance: s.alphaDistance ?? undefined,
           patches: s.patches ?? undefined,
           threads: CANONICAL_THREADS,
         }),

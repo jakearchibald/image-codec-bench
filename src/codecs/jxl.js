@@ -12,7 +12,30 @@ export const defaults = {
   quality: { min: 15, max: 90, step: 5 },
   effort: [7, 8, 9, 10],
   depth: [8],
+  alphaDistance: 'match',
 };
+
+/**
+ * libjxl's JxlEncoderDistanceFromQuality (lib/jxl/encode.cc, v0.12): the
+ * distance cjxl -q becomes.
+ */
+export function distanceFromQuality(quality) {
+  if (quality >= 100) return 0;
+  if (quality >= 30) return 0.1 + (100 - quality) * 0.09;
+  return (53 / 3000) * quality * quality - (23 / 20) * quality + 25;
+}
+
+/**
+ * cjxl -a for a job. cjxl's own default is 0 (lossless alpha) whatever the
+ * colour quality, which hands AVIF -- whose --qalpha tracks -q -- a size
+ * advantage on images with alpha. 'match' gives alpha the distance -q gives the
+ * colour; a number is a fixed distance. Rounded so the argv and the cache key
+ * don't carry float noise.
+ */
+export function resolveAlphaDistance(quality, alphaDistance) {
+  const distance = alphaDistance === 'match' ? distanceFromQuality(quality) : Number(alphaDistance);
+  return Number(distance.toFixed(4));
+}
 
 /**
  * JPEG XL has no equivalent of avifenc's `-d`, so depth is not an axis here.
@@ -41,6 +64,8 @@ export function buildEncodeArgs({
   effort,
   threads = 'multi',
   lossless = false,
+  // Null for an opaque image: cjxl is left at its default.
+  alphaDistance = null,
 }) {
   const args = [input, output, '-e', String(effort)];
 
@@ -49,6 +74,7 @@ export function buildEncodeArgs({
     args.push('-d', '0');
   } else {
     args.push('-q', String(quality));
+    if (alphaDistance != null) args.push('-a', String(resolveAlphaDistance(quality, alphaDistance)));
   }
 
   if (threads === 'single') args.push('--num_threads=0');

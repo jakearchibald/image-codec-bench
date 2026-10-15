@@ -49,6 +49,7 @@ test('defaults match the plan: AVIF q20:90:5 x s0..6, JXL q15:90:5 x e7..10', as
   assert.equal(config.avif.qalpha, 'match');
   assert.deepEqual(config.jxl.quality, [15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90]);
   assert.deepEqual(config.jxl.effort, [7, 8, 9, 10]);
+  assert.equal(config.jxl.alphaDistance, 'match');
   assert.deepEqual(config.timing, ['single', 'multi']);
   assert.equal(config.repeats, 3);
   assert.equal(config.repeatBudgetMs, 2000);
@@ -126,6 +127,7 @@ test('out-of-range encoder settings are rejected before any encoding', async () 
   await assert.rejects(resolve(['p.png', '--jxl-effort', '11']), /-e out of range/);
   await assert.rejects(resolve(['p.png', '--avif-yuv', '411']), /--avif-yuv must be/);
   await assert.rejects(resolve(['p.png', '--avif-qalpha', 'high']), /--avif-qalpha must be/);
+  await assert.rejects(resolve(['p.png', '--jxl-alpha-distance', '26']), /--jxl-alpha-distance must be/);
   await assert.rejects(resolve(['p.png', '--repeats', '0']), /--repeats must be/);
   await assert.rejects(resolve(['p.png', '--score-concurrency', '0']), /--score-concurrency/);
 });

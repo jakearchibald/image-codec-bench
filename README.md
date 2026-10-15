@@ -82,6 +82,10 @@ tools/cvvdp/.venv/bin/pip install -r tools/cvvdp/requirements.txt
   cd/m² don't count.
 - cvvdp ignores the files' colour tags and reads pixels in the display's colour space, so
   each run writes its own display definition matching the reference (e.g. P3 PQ).
+- It has no notion of alpha, so an image with alpha is composited onto flat 10% and 90%
+  grey (blending the sRGB-encoded values, as browsers do) and scored on each, keeping the
+  worse JOD; both are stored. An error often shows on only one background, so averaging
+  would halve it. This doubles the cvvdp time, and isn't supported for HDR.
 - It runs one file at a time, about 5 seconds each at 5 MP, alongside the normal scoring.
 - Its version and display model are stored with each score, not put in the cache key:
   turning `--cvvdp` on, upgrading it, or changing display only re-scores, never
@@ -350,6 +354,11 @@ compared with the non-progressive file of the same effort or speed. Each group h
 
 - **JXL** at `--jxl-quality` (default 70), and the same with `-p` (progressive AC, plus
   extra DC passes). Non-progressive JXL is still DC-first, so this measures what `-p` adds.
+- **jixel**, only with `--jixel-speed` (speeds 1–6, one group each): at `--jixel-quality`
+  (default 80), and the same with progressive DC and centre-first groups. Progressive DC
+  codes the 1:8 DC image as its own squeezed frame, every level, so it refines from an
+  8×8 preview before any AC arrives, like `cjxl --progressive_dc=1 --group_order=1`. The
+  AC stays in one pass: jixel can split it too, but this test leaves that out.
 - **AVIF** at `--avif-quality` (default 50), and a two-layer AVIF (`avifenc --layered`):
   `--preview` as layer 0 at `--scaling-mode 1/8`, then the full image as layer 1, both at
   `--avif-quality` unless `--avif-preview-quality` is given. AV1 spatial layers all have
@@ -369,7 +378,7 @@ search as `target.js`, for the SSIMULACRA2 closest to a target: cjxl in steps of
 `--jxl-step` (0.1), avifenc in whole steps, so AVIF can land a few tenths off. Each search
 starts from the `-q` options and took 4–7 encodes on f1-large.
 
-- `--target S` (or `--jxl-target`/`--avif-target`) searches the non-progressive file to
+- `--target S` (or `--jxl-target`/`--jixel-target`/`--avif-target`) searches the non-progressive file to
   S, then the progressive one to the score it reached:
 
   ```sh
@@ -624,6 +633,11 @@ These are load-bearing, each verified by running it:
 - **Transparent pixels are scored free.** Two fully-transparent images with completely
   different RGB content score exactly 100.00. Alpha-heavy images therefore show inflated
   absolute scores; the report says so rather than averaging it away.
+- **cjxl keeps alpha lossless by default** (`-a 0`) whatever `-q` is, while `avifenc
+  --qalpha` tracks `-q` here. So `--jxl-alpha-distance` defaults to `match`: `-a` gets the
+  distance libjxl maps `-q` to (`JxlEncoderDistanceFromQuality`). Only images with alpha
+  get `-a`, so opaque results keep their cache keys. jixel has no alpha setting and always
+  encodes it losslessly.
 - **`avifenc -q` and `cjxl -q` are different scales** and are never compared directly. The
   quality axis only generates points; comparison happens against measured SSIMULACRA2. The
   report warns if the two codecs' score ranges fail to overlap.

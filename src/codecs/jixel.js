@@ -71,9 +71,16 @@ export async function ensureEncoder({ log = () => {} } = {}) {
  * In HDR mode the input is the PQ reference PNG, as for cjxl; cjixel reads its
  * cICP chunk and declares the same colour encoding in the JXL.
  */
-export function buildEncodeArgs({ input, output, quality, effort, threads = 'multi', lossless = false, patches = false }) {
+export function buildEncodeArgs({
+  input, output, quality, effort, threads = 'multi', lossless = false, patches = false, progressiveDc = false,
+  groupOrder = null,
+}) {
   const args = [input, output, ...(lossless ? ['--lossless'] : ['-q', String(quality)]), '-s', String(effort)];
   if (patches) args.push('--patches');
+  // Lossy only (src/progressive.js): a squeezed DC frame first, and the
+  // groups' order (scanline, center or diagonals).
+  if (progressiveDc) args.push('--progressive-dc');
+  if (groupOrder) args.push('--group-order', groupOrder);
   // -j 0 is every core; jixel's own default is a single thread.
   args.push('-j', threads === 'single' ? '1' : '0');
   return args;

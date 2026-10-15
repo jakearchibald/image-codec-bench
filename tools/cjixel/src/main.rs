@@ -1,10 +1,17 @@
 //! cjixel IN.png OUT.jxl (-q QUALITY | --lossless) -s SPEED [-j THREADS] [--patches]
+//!        [--progressive-dc] [--group-order scanline|center|diagonals]
 //! cjixel IN.jpg OUT.jxl --jpeg -s SPEED [-j THREADS] [--jpeg-reconstruction]
 //!
 //! QUALITY is jixel's libjpeg-like 0..100 scale (`EncodeConfig::with_quality`).
 //! SPEED is 1..6: UltraFast, Fastest, Fast (jixel's default), Medium, Slow,
 //! ExtraSlow -- higher is slower, like cjxl -e. THREADS 0 means all cores.
 //! `--patches` turns on jixel's patch dictionary (off by default).
+//! `--progressive-dc` (lossy only) codes the 1:8 DC image as its own squeezed
+//! frame ahead of the main one, refining from an 8x8 preview to 1:8 before any
+//! AC arrives (`EncodeConfig::progressive_dc`, every squeeze level), like
+//! `cjxl --progressive_dc=1`. `--group-order center` stores the groups centre
+//! first (`GroupOrder::CenterFirst`), like `cjxl --group_order=1`. The AC stays
+//! in one pass.
 //!
 //! `--jpeg` transcodes a JPEG losslessly (its DCT coefficients, so the same
 //! pixels at every speed; speed only changes the entropy coding). Without
@@ -16,7 +23,7 @@
 //! primaries (the HDR reference), which is declared as such in the JXL.
 
 use jixel::{
-    ColorEncoding, EncodeConfig, JpegTranscodeConfig, Primaries, RenderingIntent, Speed, TransferFunction, WhitePoint,
+    ColorEncoding, EncodeConfig, GroupOrder, JpegTranscodeConfig, Primaries, RenderingIntent, Speed, TransferFunction, WhitePoint,
 };
 use std::process::ExitCode;
 
@@ -30,6 +37,7 @@ const PQ_PEAK_NITS: f32 = 10000.0;
 fn usage() -> ExitCode {
     eprintln!(
         "usage: cjixel IN.png OUT.jxl (-q QUALITY | --lossless) -s SPEED(1-6) [-j THREADS] [--patches]\n       \
+         [--progressive-dc] [--group-order scanline|center|diagonals]\n       \
          cjixel IN.jpg OUT.jxl --jpeg -s SPEED(1-6) [-j THREADS] [--jpeg-reconstruction]\n       cjixel --version"
     );
     ExitCode::from(2)
@@ -85,6 +93,7 @@ fn main() -> ExitCode {
     }
     let (mut positional, mut quality, mut speed, mut threads) = (Vec::new(), None, None, 0usize);
     let (mut lossless, mut patches, mut jpeg, mut reconstruction) = (false, false, false, false);
+    let (mut progressive_dc, mut group_order) = (false, None);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -93,6 +102,16 @@ fn main() -> ExitCode {
             "-j" => threads = match it.next().and_then(|v| v.parse().ok()) { Some(n) => n, None => return usage() },
             "--lossless" => lossless = true,
             "--patches" => patches = true,
+            "--progressive-dc" => progressive_dc = true,
+            "--group-order" => match it.next().map(String::as_str) {
+                Some("scanline") => group_order = Some(GroupOrder::Scanline),
+                Some("center") => group_order = Some(GroupOrder::CenterFirst),
+                Some("diagonals") => group_order = Some(GroupOrder::Diagonals),
+                _ => {
+                    eprintln!("cjixel: --group-order must be scanline, center or diagonals");
+                    return ExitCode::from(2);
+                }
+            },
             "--jpeg" => jpeg = true,
             "--jpeg-reconstruction" => reconstruction = true,
             _ => positional.push(arg),
@@ -106,12 +125,12 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     if jpeg {
-        if quality.is_some() || lossless || patches {
+        if quality.is_some() || lossless || patches || progressive_dc || group_order.is_some() {
             return usage();
         }
         return transcode_jpeg(input, output, speed, threads, reconstruction);
     }
-    if quality.is_some() == lossless || reconstruction {
+    if quality.is_some() == lossless || reconstruction || (lossless && (progressive_dc || group_order.is_some())) {
         return usage();
     }
 
@@ -139,6 +158,10 @@ fn main() -> ExitCode {
         .with_num_threads(threads);
     if let Some(quality) = quality {
         config = config.with_quality(quality);
+    }
+    config = config.with_progressive_dc(progressive_dc);
+    if let Some(order) = group_order {
+        config = config.with_group_order(order);
     }
     let (w, h) = (info.width as usize, info.height as usize);
 

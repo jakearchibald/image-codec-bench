@@ -580,6 +580,7 @@ export async function buildReport({ runDir, data, results, lossless, warnings = 
       yuv: r.yuv,
       hdrMode: r.hdrMode ?? null,
       qalpha: r.qalpha,
+      alphaDistance: r.alphaDistance ?? null,
       bytes: r.bytes,
       bpp: r.bpp,
       score: r.score,

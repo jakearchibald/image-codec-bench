@@ -49,6 +49,10 @@ export function encodeParams(job) {
   };
   // jixel only, so no other codec's keys change.
   if (job.codec === 'jixel') params.patches = Boolean(job.patches);
+  // Images with alpha only, so opaque JXL keys are unchanged.
+  if (job.codec === 'jxl' && job.alphaDistance != null) {
+    params.alphaDistance = getCodec('jxl').resolveAlphaDistance(job.quality, job.alphaDistance);
+  }
   if (job.codec === 'avif') {
     params.yuv = job.yuv;
     params.qalpha = job.qalpha === 'match' ? job.quality : Number(job.qalpha);
@@ -231,6 +235,7 @@ export async function calibrate({
         depth: s.depth,
         yuv: s.yuv ?? undefined,
         qalpha: s.qalpha ?? undefined,
+        alphaDistance: s.alphaDistance ?? undefined,
         patches: s.patches ?? undefined,
         threads: mode,
       });
@@ -335,6 +340,7 @@ export async function encodePhase({
           depth: job.depth,
           yuv: job.yuv ?? undefined,
           qalpha: job.qalpha ?? undefined,
+          alphaDistance: job.alphaDistance ?? undefined,
           patches: job.patches ?? undefined,
           threads,
         }),
@@ -419,6 +425,7 @@ export async function encodePhase({
       yuv: job.yuv ?? null,
       hdrMode: job.hdrMode ?? null,
       qalpha: params.qalpha ?? null,
+      ...(params.alphaDistance != null ? { alphaDistance: params.alphaDistance } : {}),
       bytes,
       bpp: (bytes * 8) / (reference.width * reference.height),
       bitstream: path.relative(path.dirname(assetsDir), bitstream),

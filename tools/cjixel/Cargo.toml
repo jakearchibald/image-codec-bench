@@ -7,7 +7,7 @@ description = "Encode an 8-bit PNG to lossy JPEG XL with jixel (https://github.c
 
 [dependencies]
 # Pinned: the rev is part of `cjixel --version`, which goes into the cache key.
-jixel = { git = "https://github.com/awxkee/jixel", rev = "b45195a" }
+jixel = { git = "https://github.com/awxkee/jixel", rev = "f487299" }
 png = "0.18"
 
 [profile.release]

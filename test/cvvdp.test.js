@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { displayModel, isCurrent, parseJod } from '../src/cvvdp.js';
+import { combineScores, displayModel, isCurrent, parseJod } from '../src/cvvdp.js';
 import { needsScoring } from '../src/run.js';
 import { formatTable, toCsv } from '../src/table.js';
 
@@ -26,6 +26,18 @@ test('display model: HDR is standard_hdr_pq at office light levels, in the refer
   assert.notEqual(displayModel({ primaries: 9 }).id, displayModel({ primaries: 12 }).id);
   assert.equal(displayModel({ primaries: 9 }).model.max_luminance, 1500);
   assert.equal(displayModel({ primaries: 9 }).model.E_ambient, displayModel(null).model.E_ambient);
+});
+
+test('combineScores: one reference passes through; alpha backgrounds keep the worst JOD', () => {
+  const opaque = { jod: 9.5, id: 'v|standard_4k', ms: 10 };
+  assert.deepEqual(combineScores({ opaque }), opaque);
+  assert.deepEqual(
+    combineScores({
+      dark: { jod: 9.6, id: 'v|standard_4k|alpha-min-10-90', ms: 10 },
+      light: { jod: 9.1, id: 'v|standard_4k|alpha-min-10-90', ms: 12 },
+    }),
+    { jod: 9.1, id: 'v|standard_4k|alpha-min-10-90', ms: 22, backgrounds: { dark: 9.6, light: 9.1 } },
+  );
 });
 
 const cvvdp = { id: '0.5.7|standard_4k' };

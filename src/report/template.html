@@ -726,6 +726,7 @@
             ...(r.codec === "avif" && run.hdr ? [`HDR as: ${avifHdrLabel(r)}`] : []),
           ];
           if (r.qalpha != null) lines.push(`qalpha: ${r.qalpha}`);
+          if (r.alphaDistance != null) lines.push(`alpha distance: ${r.alphaDistance}`);
           for (const [name, m] of Object.entries(r.decode ?? {})) {
             if (m?.meanMs == null) continue;
             // Spread alongside the mean, so a noisy measurement is visible

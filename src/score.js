@@ -7,7 +7,7 @@
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { scoreCvvdp, toTiff } from './cvvdp.js';
+import { combineScores, scoreCvvdp, toTiff } from './cvvdp.js';
 import { run } from './exec.js';
 import { PRIMARIES_BY_CICP, assertHdrImage, readCicp } from './hdr.js';
 import { readHeader } from './png.js';
@@ -128,17 +128,22 @@ async function decodeAndScoreHdr({ codec, bitstream, reference, referenceHeader,
 
 /**
  * ColorVideoVDP on the same decode, when --cvvdp is on. `cvvdp` carries the
- * prepared setup plus the reference already converted to TIFF (src/cvvdp.js).
+ * prepared setup plus the reference already converted to TIFF -- one per alpha
+ * background if it has alpha, scoring the worst (src/cvvdp.js).
  */
 async function cvvdpScore({ cvvdp, decodedPath }) {
   if (!cvvdp) return undefined;
-  const tif = decodedPath.replace(/\.png$/, '.tif');
-  try {
-    await toTiff(decodedPath, tif);
-    return await scoreCvvdp({ cvvdp, test: tif, reference: cvvdp.referenceTiff });
-  } finally {
-    await rm(tif, { force: true });
+  const scores = {};
+  for (const [name, reference] of Object.entries(cvvdp.referenceTiffs)) {
+    const tif = decodedPath.replace(/\.png$/, `-${name}.tif`);
+    try {
+      await toTiff(decodedPath, tif, cvvdp.backgrounds?.[name]);
+      scores[name] = await scoreCvvdp({ cvvdp, test: tif, reference });
+    } finally {
+      await rm(tif, { force: true });
+    }
   }
+  return combineScores(scores);
 }
 
 /**

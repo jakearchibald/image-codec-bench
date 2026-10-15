@@ -18,7 +18,7 @@ import {
 import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
 import { avif } from './codecs/index.js';
-import { INSTALL_HINT, prepareCvvdp, probeCvvdp, toTiff } from './cvvdp.js';
+import { INSTALL_HINT, prepareCvvdp, probeCvvdp, referenceTiffs } from './cvvdp.js';
 import { SDR_WHITE_NITS, checkHdrInput, pqDepthNote, prepareHdrReference } from './hdr.js';
 import { losslessSuite } from './lossless.js';
 import { normalise } from './normalise.js';
@@ -118,12 +118,10 @@ async function main(argv) {
     : await normalise(config.input, referencePath, { maxPixels: config.maxPixels });
   const referenceHeader = readHeader(await readFile(referencePath));
   if (cvvdpProbe) {
-    const referenceTiff = path.join(tempDir, 'reference.tif');
-    await toTiff(referencePath, referenceTiff);
-    config.cvvdp = {
-      ...(await prepareCvvdp({ probe: cvvdpProbe, hdr: reference.hdr, dir: tempDir })),
-      referenceTiff,
-    };
+    const cvvdp = await prepareCvvdp({
+      probe: cvvdpProbe, hdr: reference.hdr, alpha: reference.hasAlpha, dir: tempDir,
+    });
+    config.cvvdp = { ...cvvdp, referenceTiffs: await referenceTiffs(cvvdp, referencePath, tempDir) };
   }
   // In HDR mode the AVIF also encodes the SDR PNG, so it is part of what
   // identifies a job. The trailing tag is a fixed leftover from when scoring
@@ -169,13 +167,21 @@ async function main(argv) {
     if (reference.hasAlpha) {
       process.stdout.write(
         'Note: image has alpha. Transparent pixels are scored free, so absolute\n' +
-          '      scores are inflated and not comparable with opaque images (§2 finding 5).\n',
+          '      scores are inflated and not comparable with opaque images (§2 finding 5).\n' +
+          (config.codecs.includes('jxl')
+            ? `      cjxl -a: ${config.jxl.alphaDistance === 'match' ? 'the distance -q maps to' : config.jxl.alphaDistance}.\n`
+            : '') +
+          (config.codecs.includes('jixel') ? '      jixel has no alpha setting: its alpha is lossless.\n' : '') +
+          (config.cvvdp
+            ? '      ColorVideoVDP scores it on 10% and 90% grey and keeps the worse.\n'
+            : ''),
       );
     }
     process.stdout.write('\n');
   }
 
   // 3. Plan the grid.
+  config.alpha = reference.hasAlpha;
   const { series, jobs } = planJobs(config);
 
   // The store accumulates every job ever measured against this reference, which
