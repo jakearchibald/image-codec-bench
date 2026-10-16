@@ -15,7 +15,7 @@ import {
   dropDecodeFromData,
   measureDecodeTimes,
 } from './decode.js';
-import { assertToolchain, doctor, formatDoctor, hasWebp } from './doctor.js';
+import { assertToolchain, doctor, formatDoctor, hasOxipng, hasWebp } from './doctor.js';
 import { measureSpawnOverhead } from './exec.js';
 import { avif } from './codecs/index.js';
 import { INSTALL_HINT, prepareCvvdp, probeCvvdp, referenceTiffs } from './cvvdp.js';
@@ -192,7 +192,7 @@ async function main(argv) {
   await migrateLegacyStore({ resultsPath, fullResultsPath });
 
   const store = new ResultsStore(fullResultsPath);
-  await store.load({ force: config.force });
+  await store.load({ force: config.force, forceCodecs: config.forceCodecs });
 
   // 4. Calibrate: one encode per series, for a meaningful first ETA. Series
   //    already timed in full-results.json are seeded from it rather than re-run.
@@ -337,6 +337,7 @@ async function main(argv) {
       assetsDir,
       tempDir,
       hasWebp: hasWebp(health),
+      hasOxipng: hasOxipng(health),
       cachedRows: store.lossless,
       force: config.force,
       log: (message) => {
@@ -702,6 +703,7 @@ function serialisableConfig(config) {
     jxl: config.jxl,
     jixel: config.jixel,
     webp: config.webp,
+    png: config.png,
     timing: config.timing,
     repeats: config.repeats,
     repeatBudgetMs: config.repeatBudgetMs,

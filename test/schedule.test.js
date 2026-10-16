@@ -264,3 +264,19 @@ test('jixel patches is an axis: one series per setting, with its own id', () => 
   assert.equal(series[2].patches, null);
   assert.deepEqual(interleave(series).map((j) => j.patches), [false, true, null]);
 });
+
+test('jixel splines is an axis at speed 5-6, and folds into off below that', () => {
+  const series = buildSeries({
+    codecs: ['jixel'],
+    jixel: { quality: [50], effort: [3, 5], depth: [8], patches: [false], splines: [false, true] },
+  });
+  // Speed 3 ignores splines, so "on" there would only duplicate "off".
+  assert.deepEqual(series.map((s) => s.id), ['jixel-e3-d8', 'jixel-e5-d8', 'jixel-e5-d8-splines']);
+  assert.deepEqual(interleave(series).map((j) => j.splines), [false, false, true]);
+
+  const onOnly = buildSeries({
+    codecs: ['jixel'],
+    jixel: { quality: [50], effort: [3, 6], depth: [8], patches: [false], splines: [true] },
+  });
+  assert.deepEqual(onOnly.map((s) => s.id), ['jixel-e3-d8', 'jixel-e6-d8-splines']);
+});

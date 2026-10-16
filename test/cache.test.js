@@ -120,6 +120,19 @@ test('--force clears prior results on load', async () => {
   assert.equal(reopened.has('k1'), false);
 });
 
+test('--force-codecs clears only those codecs on load', async () => {
+  const { store } = await tempStore();
+  await store.put({ key: 'a', codec: 'avif', score: 1 });
+  await store.put({ key: 'j', codec: 'jxl', score: 1 });
+  await store.putLossless([{ codec: 'avif' }, { codec: 'jxl' }]);
+
+  const reopened = new ResultsStore(store.filePath);
+  await reopened.load({ forceCodecs: ['jxl'] });
+  assert.equal(reopened.has('a'), true);
+  assert.equal(reopened.has('j'), false);
+  assert.deepEqual(reopened.lossless.map((r) => r.codec), ['avif']);
+});
+
 test('a corrupt results.json is replaced rather than crashing the run', async () => {
   const { store } = await tempStore();
   const { writeFile } = await import('node:fs/promises');
@@ -152,4 +165,11 @@ test('patches is in jixel cache keys only', () => {
   assert.equal(encodeParams({ ...base, codec: 'jixel', patches: true }).patches, true);
   assert.equal(encodeParams({ ...base, codec: 'jixel' }).patches, false);
   assert.ok(!('patches' in encodeParams({ ...base, codec: 'jxl', patches: null })));
+});
+
+test('splines only enter jixel cache keys when on, so earlier keys are unchanged', () => {
+  const base = { quality: 50, effort: 5, depth: 8, codec: 'jixel' };
+  assert.equal(encodeParams({ ...base, splines: true }).splines, true);
+  assert.deepEqual(encodeParams({ ...base, splines: false }), encodeParams(base));
+  assert.ok(!('splines' in encodeParams({ ...base, codec: 'jxl', splines: null })));
 });

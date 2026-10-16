@@ -23,8 +23,9 @@ function stableStringify(value) {
 
 // Tools only one codec runs, and only when asked for. They key that codec's
 // jobs alone: otherwise adding jixel to a run would re-key, and re-encode,
-// every AVIF and cjxl job already measured.
-const CODEC_ONLY_TOOLS = { cjixel: 'jixel' };
+// every AVIF and cjxl job already measured. Same for oxipng, so installing it
+// doesn't invalidate a whole run.
+const CODEC_ONLY_TOOLS = { cjixel: 'jixel', oxipng: 'png' };
 
 function versionsFor(codec, versions) {
   if (!versions) return versions;
@@ -55,7 +56,7 @@ export class ResultsStore {
     this.writeQueue = Promise.resolve();
   }
 
-  async load({ force = false } = {}) {
+  async load({ force = false, forceCodecs = [] } = {}) {
     try {
       const raw = await readFile(this.filePath, 'utf8');
       this.data = JSON.parse(raw);
@@ -73,6 +74,12 @@ export class ResultsStore {
     if (force) {
       this.data.jobs = [];
       this.data.lossless = [];
+    }
+    if (forceCodecs.length > 0) {
+      // Dropped rather than flagged for re-run: put() merges into an existing
+      // row, which would carry its old decode timings onto the new bitstream.
+      this.data.jobs = this.data.jobs.filter((j) => !forceCodecs.includes(j.codec));
+      this.data.lossless = this.data.lossless.filter((r) => !forceCodecs.includes(r.codec));
     }
 
     this.byKey = new Map(this.data.jobs.filter((j) => j.key).map((j) => [j.key, j]));

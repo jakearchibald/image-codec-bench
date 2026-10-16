@@ -3,15 +3,16 @@
 import * as avif from './avif.js';
 import * as jixel from './jixel.js';
 import * as jxl from './jxl.js';
+import * as png from './png.js';
 import * as webp from './webp.js';
 
-export const codecs = { avif, jxl, jixel, webp };
+export const codecs = { avif, jxl, jixel, webp, png };
 
 /** Codecs that take part in the lossy quality x effort sweep. */
 export const lossyCodecs = [avif, jxl, jixel];
 
 /** Codecs in the lossless table. jixel only joins when --codecs names it. */
-export const losslessCodecs = [jxl, jixel, webp, avif];
+export const losslessCodecs = [jxl, jixel, webp, png, avif];
 
 export function getCodec(name) {
   const codec = codecs[name];
@@ -21,4 +22,4 @@ export function getCodec(name) {
   return codec;
 }
 
-export { avif, jixel, jxl, webp };
+export { avif, jixel, jxl, png, webp };

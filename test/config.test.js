@@ -170,6 +170,18 @@ test('boolean flags parse', async () => {
   assert.equal(config.report, false);
 });
 
+test('--force-codecs parses and validates', async () => {
+  assert.deepEqual((await resolve(['p.png'])).forceCodecs, []);
+  assert.deepEqual((await resolve(['p.png', '--force-codecs', 'jxl,webp'])).forceCodecs, ['jxl', 'webp']);
+  await assert.rejects(resolve(['p.png', '--force-codecs', 'gif']), /Bad --force-codecs/);
+});
+
+test('--png-effort parses and is range-checked', async () => {
+  assert.deepEqual((await resolve(['p.png'])).png.effort, [0, 1, 2, 3, 4, 5, 6]);
+  assert.deepEqual((await resolve(['p.png', '--png-effort', '2,6'])).png.effort, [2, 6]);
+  await assert.rejects(resolve(['p.png', '--png-effort', '7']), /oxipng -o out of range/);
+});
+
 test("--timing none disables timing entirely", async () => {
   const config = await resolve(['photo.png', '--timing', 'none']);
   assert.deepEqual(config.timing, []);
@@ -231,4 +243,10 @@ test('--jixel-patches takes off, on or both, as one series each', async () => {
   assert.deepEqual((await resolve(['p.png'])).jixel.patches, [false]);
   assert.deepEqual((await resolve(['p.png', '--jixel-patches', 'on,off'])).jixel.patches, [false, true]);
   await assert.rejects(resolve(['p.png', '--jixel-patches', 'yes']), /--jixel-patches takes off and\/or on/);
+});
+
+test('--jixel-splines takes off, on or both, and names itself in errors', async () => {
+  assert.deepEqual((await resolve(['p.png'])).jixel.splines, [false]);
+  assert.deepEqual((await resolve(['p.png', '--jixel-splines', 'on,off'])).jixel.splines, [false, true]);
+  await assert.rejects(resolve(['p.png', '--jixel-splines', 'yes']), /--jixel-splines takes off and\/or on/);
 });

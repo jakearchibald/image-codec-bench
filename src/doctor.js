@@ -22,6 +22,7 @@ const TOOLS = [
   { name: 'ssimulacra2', args: null, required: true },
   { name: 'cwebp', args: ['-version'], required: false },
   { name: 'dwebp', args: ['-version'], required: false },
+  { name: 'oxipng', args: ['--version'], required: false },
   { name: 'magick', args: ['-version'], required: true },
 ];
 
@@ -167,8 +168,13 @@ export function assertToolchain(report) {
   if (report.ok) return;
   throw new Error(
     `Missing required tool(s): ${report.missing.join(', ')}.\n` +
-      'Install them (e.g. `brew install libavif libjxl imagemagick webp`) and re-run.',
+      'Install them (e.g. `brew install libavif libjxl imagemagick webp oxipng`) and re-run.',
   );
+}
+
+/** Whether the optional oxipng is available for the lossless table. */
+export function hasOxipng(report) {
+  return Boolean(report.tools.find((t) => t.name === 'oxipng')?.present);
 }
 
 /** Whether the optional WebP tools are available for the lossless table. */

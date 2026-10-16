@@ -9,7 +9,7 @@ Zero runtime dependencies — just Node 22+ and the codec CLIs (plus `cargo` for
 ## Install
 
 ```sh
-brew install libavif libjxl webp imagemagick   # avifenc/avifdec, cjxl/djxl/ssimulacra2, cwebp/dwebp, magick
+brew install libavif libjxl webp imagemagick oxipng   # avifenc/avifdec, cjxl/djxl/ssimulacra2, cwebp/dwebp, magick, oxipng
 ```
 
 A `doctor` check runs on every invocation and records tool versions into `results.json`,
@@ -44,7 +44,8 @@ every flag.
 
 Runs are **resumable**: results are keyed by a hash of (reference bytes, encode params,
 tool versions), so re-running skips completed jobs and Ctrl-C is safe at any point. Use
-`--force` to ignore the cache.
+`--force` to ignore the cache, or `--force-codecs jxl` to ignore it for just those codecs
+(lossy and lossless rows) while reusing the rest.
 
 ### Encode memory
 
@@ -104,6 +105,7 @@ ordinary `.jxl`, decoded with `djxl` like cjxl's.
 node src/cli.js photo.png --codecs avif,jxl,jixel --cvvdp
 node src/cli.js photo.png --codecs jixel --jixel-effort 5 --jixel-quality 30:95:5
 node src/cli.js screenshot.png --codecs jxl,jixel --jixel-patches off,on
+node src/cli.js illustration.png --codecs jixel --jixel-effort 5,6 --jixel-splines off,on
 ```
 
 - `--jixel-effort` is speed 1–6: ultrafast, fastest, fast (jixel's default), medium,
@@ -114,12 +116,23 @@ node src/cli.js screenshot.png --codecs jxl,jixel --jixel-patches off,on
 - `--jixel-patches off,on` turns on jixel's patch dictionary (off by default), with each
   setting as its own series, labelled e.g. `slow+patches`. It matters for text and flat
   graphics. Photos find no patches.
+- `--jixel-splines off,on` turns on jixel's experimental splines (off by default): thin
+  lines (wires, ink, hair) are coded as JPEG XL splines next to the VarDCT image when that
+  pays. Like patches, each setting is its own series, e.g. `slow+splines`. It only
+  applies to lossy encodes at slow and extraslow. jixel ignores it at lower speeds, so
+  "on" there is the same encode as "off" and adds no extra series. On a 1MP illustration
+  at slow, q75, splines saved 5% and gained 1.2 SSIMULACRA2. They cost encode time
+  (0.04s → 0.3s there) and some decode time. Cache keys only include splines when they're
+  on, so earlier jixel results stay cached.
 - jixel joins the lossless table when `--codecs` names it: one row per speed and patches
   setting, checked bit-exact like the others.
 - HDR runs work as for cjxl: jixel encodes the PQ reference (cICP primaries, 10,000-nit
   intensity target, as cjxl writes) and is decoded by `djxl` to 16-bit PQ.
 - `src/target.js` and `src/fixed-quality.js` take `--codecs …,jixel` with
-  `--jixel-effort` and `--jixel-patches` too (`fixed-quality` also `--jixel-quality`).
+  `--jixel-effort`, `--jixel-patches` and `--jixel-splines` too (`fixed-quality` also
+  `--jixel-quality`), as does `src/progressive.js` (`--jixel-splines`, one group per
+  setting). The lossless table and `jpeg-transcode` ignore splines: jixel only codes them
+  in lossy VarDCT.
 - The cache key includes `cjixel --version`, which names the jixel rev. Bumping the pin
   in `tools/cjixel/Cargo.toml` re-encodes jixel's jobs, and only those: other codecs'
   keys leave `cjixel` out, so adding jixel to an earlier run re-encodes nothing else.
@@ -359,6 +372,8 @@ compared with the non-progressive file of the same effort or speed. Each group h
   codes the 1:8 DC image as its own squeezed frame, every level, so it refines from an
   8×8 preview before any AC arrives, like `cjxl --progressive_dc=1 --group_order=1`. The
   AC stays in one pass: jixel can split it too, but this test leaves that out.
+  `--jixel-splines off,on` adds a spline group per speed 5–6, compared with its own
+  non-progressive spline file.
 - **AVIF** at `--avif-quality` (default 50), and a two-layer AVIF (`avifenc --layered`):
   `--preview` as layer 0 at `--scaling-mode 1/8`, then the full image as layer 1, both at
   `--avif-quality` unless `--avif-preview-quality` is given. AV1 spatial layers all have
@@ -570,9 +585,14 @@ the earlier ones stay in `full-results.json` and are reused rather than re-encod
    With `--no-timing` this phase encodes each job once, all cores, untimed.
 3. **Phase 2 — score, parallel.** Decode at the reference's bit depth, score with
    SSIMULACRA2, delete the decoded PNG immediately (they are megabytes each).
-4. **Lossless sweep** for JXL, WebP and AVIF across effort levels — `avifenc -s` and
-   `cjxl -e` reuse the lossy ranges, `cwebp -z` uses `--webp-effort` (default 0-9). Every
-   point is asserted bit-exact *and* asserted to score exactly 100.00.
+4. **Lossless sweep** for JXL, WebP, PNG and AVIF across effort levels — `avifenc -s` and
+   `cjxl -e` reuse the lossy ranges, `cwebp -z` uses `--webp-effort` (default 0-9),
+   `oxipng -o` uses `--png-effort` (default 0-6). Every point is asserted bit-exact *and*
+   asserted to score exactly 100.00. The "source PNG" row is the normalised reference as
+   ImageMagick wrote it, which is not an optimised PNG (3-44% larger than `oxipng -o 6`
+   on the test inputs); the oxipng rows are the fair PNG comparison. oxipng runs with
+   `--force`, so a level that can't beat ImageMagick's file reports its own output
+   rather than a copy of the input.
 5. **Phase 3 — browser decode timing, serial.** `createImageBitmap` in a real browser,
    driven over classic W3C WebDriver, for the lossy grid and the lossless rows. Mean of up
    to `--decode-repeats` runs after discarded warm-up, with the spread recorded.

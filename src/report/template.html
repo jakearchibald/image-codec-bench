@@ -429,7 +429,7 @@
       <h2>Lossless</h2>
       <p>
         Each codec is swept across its effort levels
-        (<code>avifenc -s</code>, <code>cjxl -e</code>, <code>cwebp -z</code>),
+        (<code>avifenc -s</code>, <code>cjxl -e</code>, <code>cwebp -z</code>, <code>oxipng -o</code>),
         so these are curves rather than single points.
       </p>
 
@@ -585,6 +585,7 @@
         ["cjxl / djxl", run.versions.cjxl ?? "—"],
         ...(run.versions.cjixel ? [["jixel (tools/cjixel)", run.versions.cjixel.replace(/^cjixel: /, "")]] : []),
         ["cwebp", run.versions.cwebp ?? "not installed"],
+        ["oxipng", run.versions.oxipng ?? "not installed"],
         ["ssimulacra2", run.versions.ssimulacra2 ?? "—"],
         ...(run.config.timing.length
           ? [
@@ -1165,7 +1166,7 @@
         // Stated rather than drawn: the source PNG has no encode time of ours,
         // so it cannot honestly be a point on this chart.
         document.getElementById("lossless-size-note").textContent = losslessSource
-          ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)}.`
+          ? `For reference, the source PNG (ImageMagick's encode, not optimised) is ${fmtBytes(losslessSource.bytes)}.`
           : "";
 
         const sizeChart = new Chart(
@@ -1293,9 +1294,9 @@
 
         document.getElementById("lossless-decode-chart-note").textContent =
           losslessSource?.decode?.[decodeTarget]?.meanMs != null
-            ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)} and decodes in ${fmtMs(losslessSource.decode[decodeTarget].meanMs)}.`
+            ? `For reference, the source PNG (ImageMagick's encode, not optimised) is ${fmtBytes(losslessSource.bytes)} and decodes in ${fmtMs(losslessSource.decode[decodeTarget].meanMs)}.`
             : losslessSource
-              ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)}.`
+              ? `For reference, the source PNG (ImageMagick's encode, not optimised) is ${fmtBytes(losslessSource.bytes)}.`
               : "";
 
         const losslessDecodeChart = new Chart(
@@ -1324,9 +1325,9 @@
           const sourceDecode = losslessSource?.decode?.[decodeTarget]?.meanMs;
           document.getElementById("lossless-decode-chart-note").textContent =
             losslessSource && sourceDecode != null
-              ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)} and decodes in ${fmtMs(sourceDecode)}.`
+              ? `For reference, the source PNG (ImageMagick's encode, not optimised) is ${fmtBytes(losslessSource.bytes)} and decodes in ${fmtMs(sourceDecode)}.`
               : losslessSource
-                ? `For reference, the source PNG is ${fmtBytes(losslessSource.bytes)}.`
+                ? `For reference, the source PNG (ImageMagick's encode, not optimised) is ${fmtBytes(losslessSource.bytes)}.`
                 : "";
           losslessDecodeChart.update();
         }

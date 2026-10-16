@@ -7,6 +7,8 @@
 //    expensive (-s 0) work and estimation error averages out
 //  - cost-weighted progress, so the bar advances at a roughly constant rate
 
+import { splinesApply } from './codecs/jixel.js';
+
 /** Parse `min:max:step`, `a-b`, or an explicit comma list into numbers. */
 export function parseRange(spec, { integer = false } = {}) {
   if (typeof spec === 'number') return [spec];
@@ -97,26 +99,37 @@ export function buildSeries(config) {
     const hdrModes = config.hdr && codecConfig.hdrModes ? codecConfig.hdrModes : [null];
     // jixel only: patch dictionary off/on. Null for everything else.
     const patchModes = toList(codecConfig.patches);
+    // jixel only, likewise. Null for everything else.
+    const splineModes = toList(codecConfig.splines);
     for (const hdrMode of hdrModes) {
       for (const depth of depths) {
         for (const yuv of yuvs) {
           for (const effort of codecConfig.effort) {
+            // jixel ignores splines below SPLINES_MIN_SPEED, so "on" there is
+            // the "off" encode: folded into it rather than run twice under a
+            // label that claims splines.
+            const effortSplines = [
+              ...new Set(splineModes.map((on) => (on && !splinesApply(effort) ? false : on))),
+            ];
             for (const patches of patchModes) {
-              series.push({
-                id: seriesId(codecName, effort, depth, yuv, hdrMode, patches),
-                codec: codecName,
-                effort,
-                depth,
-                yuv,
-                hdrMode,
-                patches,
-                qalpha: codecConfig.qalpha ?? null,
-                // JXL only, and only when the reference has alpha, so opaque
-                // runs' cache keys are unchanged.
-                alphaDistance: config.alpha ? codecConfig.alphaDistance ?? null : null,
-                hdr: Boolean(config.hdr),
-                qualities: bisectionOrder(codecConfig.quality),
-              });
+              for (const splines of effortSplines) {
+                series.push({
+                  id: seriesId(codecName, effort, depth, yuv, hdrMode, patches, splines),
+                  codec: codecName,
+                  effort,
+                  depth,
+                  yuv,
+                  hdrMode,
+                  patches,
+                  splines,
+                  qalpha: codecConfig.qalpha ?? null,
+                  // JXL only, and only when the reference has alpha, so opaque
+                  // runs' cache keys are unchanged.
+                  alphaDistance: config.alpha ? codecConfig.alphaDistance ?? null : null,
+                  hdr: Boolean(config.hdr),
+                  qualities: bisectionOrder(codecConfig.quality),
+                });
+              }
             }
           }
         }
@@ -132,10 +145,11 @@ function toList(value) {
   return Array.isArray(value) ? value : [value];
 }
 
-export function seriesId(codec, effort, depth, yuv, hdrMode = null, patches = null) {
+export function seriesId(codec, effort, depth, yuv, hdrMode = null, patches = null, splines = null) {
   const parts = [codec, `e${effort}`, `d${depth}`];
   if (yuv) parts.push(`yuv${yuv}`);
   if (patches) parts.push('patches');
+  if (splines) parts.push('splines');
   // Gain map is the original HDR mode, so it keeps the plain id: series
   // stored before the other modes existed still group with new results.
   if (hdrMode && hdrMode !== 'gainmap') parts.push(hdrMode);
@@ -164,6 +178,7 @@ export function interleave(series) {
         hdr: s.hdr,
         hdrMode: s.hdrMode,
         patches: s.patches,
+        splines: s.splines,
         round,
       });
     }

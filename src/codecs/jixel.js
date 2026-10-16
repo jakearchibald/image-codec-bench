@@ -32,15 +32,22 @@ export const defaults = {
   // jixel's patch dictionary (EncodeConfig::patches), off by default. Each
   // setting is its own series; it matters for text and flat graphics.
   patches: [false],
+  // Experimental spline coding of thin lines (EncodeConfig::splines), lossy
+  // only and off by default; likewise one series per setting.
+  splines: [false],
 };
+
+/** jixel only codes splines at Slow and ExtraSlow; below, they change nothing. */
+export const SPLINES_MIN_SPEED = 5;
+export const splinesApply = (speed) => speed >= SPLINES_MIN_SPEED;
 
 /** Like cjxl: no coded-depth knob, so depth is not an axis. */
 export const hasDepthAxis = false;
 
 export const effortFlag = 'speed';
-/** The speed's name, plus `+patches` for a series with patches on. */
-export const effortLabel = (value, { patches = false } = {}) =>
-  `${SPEEDS[value - 1] ?? `s${value}`}${patches ? '+patches' : ''}`;
+/** The speed's name, plus `+patches`/`+splines` for a series with them on. */
+export const effortLabel = (value, { patches = false, splines = false } = {}) =>
+  `${SPEEDS[value - 1] ?? `s${value}`}${patches ? '+patches' : ''}${splines ? '+splines' : ''}`;
 
 export const encoder = 'cjixel';
 export const decoder = jxl.decoder;
@@ -72,11 +79,13 @@ export async function ensureEncoder({ log = () => {} } = {}) {
  * cICP chunk and declares the same colour encoding in the JXL.
  */
 export function buildEncodeArgs({
-  input, output, quality, effort, threads = 'multi', lossless = false, patches = false, progressiveDc = false,
-  groupOrder = null,
+  input, output, quality, effort, threads = 'multi', lossless = false, patches = false, splines = false,
+  progressiveDc = false, groupOrder = null,
 }) {
   const args = [input, output, ...(lossless ? ['--lossless'] : ['-q', String(quality)]), '-s', String(effort)];
   if (patches) args.push('--patches');
+  // Lossy only: cjixel refuses it with --lossless.
+  if (splines && !lossless) args.push('--splines');
   // Lossy only (src/progressive.js): a squeezed DC frame first, and the
   // groups' order (scanline, center or diagonals).
   if (progressiveDc) args.push('--progressive-dc');

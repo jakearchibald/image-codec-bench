@@ -49,6 +49,8 @@ export function encodeParams(job) {
   };
   // jixel only, so no other codec's keys change.
   if (job.codec === 'jixel') params.patches = Boolean(job.patches);
+  // Only when on, so every jixel key from before splines is unchanged.
+  if (job.codec === 'jixel' && job.splines) params.splines = true;
   // Images with alpha only, so opaque JXL keys are unchanged.
   if (job.codec === 'jxl' && job.alphaDistance != null) {
     params.alphaDistance = getCodec('jxl').resolveAlphaDistance(job.quality, job.alphaDistance);
@@ -164,6 +166,7 @@ export function bitstreamName(job) {
   const parts = [job.codec, `q${job.quality}`, `e${job.effort}`, ...depthPart(job, (d) => `d${d}`)];
   if (job.codec === 'avif') parts.push(`yuv${job.yuv}`);
   if (job.patches) parts.push('patches');
+  if (job.splines) parts.push('splines');
   if (job.hdrMode && job.hdrMode !== 'gainmap') parts.push(job.hdrMode);
   return `${parts.join('-')}.${getCodec(job.codec).extension}`;
 }
@@ -173,6 +176,7 @@ function seriesDisplayName(s) {
   const parts = [s.codec, `e${s.effort}`, ...depthPart(s, (d) => `d${d}`)];
   if (s.yuv) parts.push(`yuv${s.yuv}`);
   if (s.patches) parts.push('patches');
+  if (s.splines) parts.push('splines');
   if (s.hdrMode && s.hdrMode !== 'gainmap') parts.push(s.hdrMode);
   return parts.join('-');
 }
@@ -237,6 +241,7 @@ export async function calibrate({
         qalpha: s.qalpha ?? undefined,
         alphaDistance: s.alphaDistance ?? undefined,
         patches: s.patches ?? undefined,
+        splines: s.splines ?? undefined,
         threads: mode,
       });
       const { ms } = await exec(encoderFor(codec, reference, s), args);
@@ -342,6 +347,7 @@ export async function encodePhase({
           qalpha: job.qalpha ?? undefined,
           alphaDistance: job.alphaDistance ?? undefined,
           patches: job.patches ?? undefined,
+          splines: job.splines ?? undefined,
           threads,
         }),
         // Every encode, not just the canonical one, so all timings carry the

@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { getCodec } from './codecs/index.js';
-import { parseAlphaDistance, parsePatchModes, parsePixels, parseYuvModes } from './config.js';
+import { parseAlphaDistance, parsePatchModes, parsePixels, parseSplineModes, parseYuvModes } from './config.js';
 import { assertToolchain, doctor, formatDoctor } from './doctor.js';
 import { run as exec } from './exec.js';
 import { hasGainMap, isHdrPng } from './hdr.js';
@@ -36,6 +36,7 @@ const OPTIONS = {
   'jixel-quality': { type: 'string', default: '75' },
   'jixel-effort': { type: 'string', default: '1-6' },
   'jixel-patches': { type: 'string', default: 'off' },
+  'jixel-splines': { type: 'string', default: 'off' },
   images: { type: 'string' },
   'max-pixels': { type: 'string', default: '0' },
   out: { type: 'string', default: 'out' },
@@ -70,6 +71,7 @@ Options:
   --jixel-quality N          jixel -q (default 75)
   --jixel-effort RANGE       jixel speed (default 1-6; 6 is slowest)
   --jixel-patches LIST       off | on | off,on (default off)
+  --jixel-splines LIST       off | on | off,on (default off; speed 5-6 only)
   --images LIST              only these file names from the directory (default all)
   --max-pixels N             downscale each source to fit N pixels first (e.g. 2MP)
   --out DIR                  where the JSON goes (default out)
@@ -113,6 +115,7 @@ function resolveConfig(values, positionals) {
       effort: parseRange(values['jixel-effort'], { integer: true }),
       depth: [8],
       patches: parsePatchModes(values['jixel-patches']),
+      splines: parseSplineModes(values['jixel-splines']),
     },
     images: values.images ? values.images.split(',').map((f) => f.trim()).filter(Boolean) : null,
     maxPixels: parsePixels(values['max-pixels']),
@@ -152,17 +155,19 @@ function resolveConfig(values, positionals) {
 
 /**
  * Score spread across effort, per image and per group of settings that differ
- * only in effort (codec x depth x yuv x patches), so yuv's (or patches') effect
+ * only in effort (codec x depth x yuv x patches x splines), so yuv's (or patches') effect
  * isn't counted as effort's.
  */
 function summarise(results) {
   const groups = new Map();
   for (const r of results) {
     const key = groupKey(r);
-    if (!groups.has(key)) groups.set(key, { codec: r.codec, depth: r.depth, yuv: r.yuv, patches: r.patches, rows: [] });
+    if (!groups.has(key)) {
+      groups.set(key, { codec: r.codec, depth: r.depth, yuv: r.yuv, patches: r.patches, splines: r.splines, rows: [] });
+    }
     groups.get(key).rows.push(r);
   }
-  return [...groups.entries()].map(([group, { codec, depth, yuv, patches, rows }]) => {
+  return [...groups.entries()].map(([group, { codec, depth, yuv, patches, splines, rows }]) => {
     const best = rows.reduce((a, b) => (b.score > a.score ? b : a));
     const worst = rows.reduce((a, b) => (b.score < a.score ? b : a));
     return {
@@ -171,6 +176,7 @@ function summarise(results) {
       depth,
       yuv,
       ...(patches === undefined ? {} : { patches }),
+      ...(splines ? { splines } : {}),
       min: { effort: worst.effort, score: worst.score },
       max: { effort: best.effort, score: best.score },
       range: best.score - worst.score,
@@ -178,9 +184,11 @@ function summarise(results) {
   });
 }
 
-const groupKey = (r) => [r.codec, `d${r.depth}`, r.yuv && `yuv${r.yuv}`, r.patches && 'patches'].filter(Boolean).join('-');
+const groupKey = (r) => [r.codec, `d${r.depth}`, r.yuv && `yuv${r.yuv}`, r.patches && 'patches', r.splines && 'splines'].filter(Boolean).join('-');
 
-const settingId = (r) => JSON.stringify([r.codec, r.effort, r.depth, r.yuv ?? null, r.patches ?? null]);
+// Splines as true or null, so rows from before splines existed still match.
+const settingId = (r) =>
+  JSON.stringify([r.codec, r.effort, r.depth, r.yuv ?? null, r.patches ?? null, r.splines || null]);
 
 /**
  * Fold this run's images into an earlier JSON for the same directory and
@@ -288,6 +296,7 @@ async function main(argv) {
           // Series span every image, so whether alpha applies is per image.
           alphaDistance: reference.hasAlpha ? config.jxl.alphaDistance : undefined,
           patches: s.patches ?? undefined,
+          splines: s.splines ?? undefined,
           threads: CANONICAL_THREADS,
         }),
       );
@@ -308,6 +317,8 @@ async function main(argv) {
         depth: s.depth,
         yuv: s.yuv,
         ...(s.codec === 'jixel' ? { patches: Boolean(s.patches) } : {}),
+        // Only when on, as in the lossy cache key.
+        ...(s.splines ? { splines: true } : {}),
         score,
         bytes,
       };

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DEFAULT_TARGETS, parseDropTargets, parseTargets } from './browsers.js';
-import { avif, jixel, jxl, webp } from './codecs/index.js';
+import { avif, jixel, jxl, png, webp } from './codecs/index.js';
 import { parseRange } from './schedule.js';
 
 export const OPTIONS = {
@@ -27,8 +27,10 @@ export const OPTIONS = {
   'jixel-quality': { type: 'string' },
   'jixel-effort': { type: 'string' },
   'jixel-patches': { type: 'string' },
+  'jixel-splines': { type: 'string' },
 
   'webp-effort': { type: 'string' },
+  'png-effort': { type: 'string' },
 
   codecs: { type: 'string' },
   timing: { type: 'string' },
@@ -54,6 +56,7 @@ export const OPTIONS = {
   'no-lossless': { type: 'boolean' },
   'dry-run': { type: 'boolean' },
   force: { type: 'boolean' },
+  'force-codecs': { type: 'string' },
   'keep-decoded': { type: 'boolean' },
   'no-report': { type: 'boolean' },
   quiet: { type: 'boolean' },
@@ -128,14 +131,17 @@ export function parseYuvModes(spec) {
  * Parse `--jixel-patches`: off, on, or both (`off,on`), each its own series.
  * Returned as booleans in canonical order (off first), deduped.
  */
-export function parsePatchModes(spec) {
+export function parsePatchModes(spec, flag = '--jixel-patches') {
   const modes = String(spec).split(',').map((m) => m.trim()).filter((m) => m.length > 0);
-  if (modes.length === 0) throw new Error('--jixel-patches needs at least one of off, on');
+  if (modes.length === 0) throw new Error(`${flag} needs at least one of off, on`);
   for (const mode of modes) {
-    if (mode !== 'off' && mode !== 'on') throw new Error(`--jixel-patches takes off and/or on (got ${mode})`);
+    if (mode !== 'off' && mode !== 'on') throw new Error(`${flag} takes off and/or on (got ${mode})`);
   }
   return [false, true].filter((on) => modes.includes(on ? 'on' : 'off'));
 }
+
+/** `--jixel-splines`: off, on, or both, parsed exactly like `--jixel-patches`. */
+export const parseSplineModes = (spec) => parsePatchModes(spec, '--jixel-splines');
 
 /**
  * How AVIF can carry HDR, in canonical order: SDR base + gain map up to HDR,
@@ -246,12 +252,18 @@ export async function resolveConfig(values, positionals) {
       effort: parseRange(pick('jixel-effort', 'jixelEffort', jixel.defaults.effort.join(',')), { integer: true }),
       depth: [8],
       patches: parsePatchModes(pick('jixel-patches', 'jixelPatches', 'off')),
+      splines: parseSplineModes(pick('jixel-splines', 'jixelSplines', 'off')),
     },
 
     // WebP appears in the lossless suite only, so it has an effort axis and
     // nothing else.
     webp: {
       effort: parseRange(pick('webp-effort', 'webpEffort', webp.defaults.effort.join(',')), { integer: true }),
+    },
+
+    // PNG via oxipng, likewise lossless-only.
+    png: {
+      effort: parseRange(pick('png-effort', 'pngEffort', png.defaults.effort.join(',')), { integer: true }),
     },
 
     timing: parseTiming(
@@ -296,6 +308,9 @@ export async function resolveConfig(values, positionals) {
     lossless: losslessDisabled ? false : losslessRequested || fileConfig.lossless !== false,
     dryRun: values['dry-run'] === true,
     force: values.force === true,
+    // Like --force, but only for these codecs: their stored rows are dropped
+    // and re-measured, and every other codec's rows are reused.
+    forceCodecs: values['force-codecs'] ? parseForceCodecs(values['force-codecs']) : [],
     keepDecoded: values['keep-decoded'] === true,
     report: values['no-report'] !== true && fileConfig.report !== false,
     quiet: values.quiet === true,
@@ -303,6 +318,16 @@ export async function resolveConfig(values, positionals) {
 
   validate(config);
   return config;
+}
+
+function parseForceCodecs(spec) {
+  const names = String(spec).split(',').map((c) => c.trim()).filter((c) => c.length > 0);
+  for (const name of names) {
+    if (!['avif', 'jxl', 'jixel', 'webp', 'png'].includes(name)) {
+      throw new Error(`Bad --force-codecs '${name}' (expected avif, jxl, jixel, webp or png)`);
+    }
+  }
+  return names;
 }
 
 function rangeSpec({ min, max, step }) {
@@ -357,6 +382,9 @@ function validate(config) {
   for (const z of config.webp.effort) {
     if (z < 0 || z > 9) throw new Error(`cwebp -z out of range: ${z} (expected 0..9)`);
   }
+  for (const o of config.png.effort) {
+    if (o < 0 || o > 6) throw new Error(`oxipng -o out of range: ${o} (expected 0..6)`);
+  }
 }
 
 export const HELP = `image-codec-bench -- sweep an image through AVIF and JPEG XL,
@@ -385,7 +413,11 @@ Options:
                              slow, extraslow (default 3,5,6)
   --jixel-patches LIST       off | on | off,on: jixel's patch dictionary, each
                              setting its own series (default off)
+  --jixel-splines LIST       off | on | off,on: jixel's experimental splines,
+                             each its own series (default off). Lossy, speed
+                             5-6 only: below that "on" is the same encode as off
   --webp-effort RANGE        cwebp -z, lossless only (default 0-9)
+  --png-effort RANGE         oxipng -o, lossless only (default 0-6)
 
   --codecs LIST              lossy sweep codecs: avif, jxl, jixel (default avif,jxl)
   --timing MODES             single,multi,none (default both)
@@ -429,6 +461,8 @@ Options:
   --no-lossless              skip the lossless suite
   --dry-run                  calibrate, print job count and ETA, then stop
   --force                    ignore cached results
+  --force-codecs LIST        ignore cached results for these codecs only
+                             (avif, jxl, jixel, webp, png), keeping the rest
   --keep-decoded             keep decoded PNGs (large; debugging only)
   --no-report                skip report.html
   --quiet                    suppress the progress bar

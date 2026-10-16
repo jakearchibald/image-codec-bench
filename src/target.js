@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { getCodec } from './codecs/index.js';
-import { parseAlphaDistance, parseHdrModes, parsePatchModes, parsePixels, parseYuvModes } from './config.js';
+import { parseAlphaDistance, parseHdrModes, parsePatchModes, parsePixels, parseSplineModes, parseYuvModes } from './config.js';
 import { assertToolchain, doctor, formatDoctor } from './doctor.js';
 import { run as exec } from './exec.js';
 import { checkHdrInput, pqDepthNote, prepareHdrReference } from './hdr.js';
@@ -37,6 +37,7 @@ const OPTIONS = {
   'jxl-step': { type: 'string', default: '0.1' },
   'jixel-effort': { type: 'string', default: '3' },
   'jixel-patches': { type: 'string', default: 'off' },
+  'jixel-splines': { type: 'string', default: 'off' },
   'max-pixels': { type: 'string', default: '0' },
   sdr: { type: 'string' },
   out: { type: 'string', default: 'out' },
@@ -73,6 +74,7 @@ Options:
   --jixel-effort RANGE       jixel speed 1-6 (default 3, jixel's default; 6 is
                              slowest)
   --jixel-patches LIST       off | on | off,on (default off)
+  --jixel-splines LIST       off | on | off,on (default off; speed 5-6 only)
   --max-pixels N             downscale source to fit N pixels first (e.g. 2MP;
                              not available for HDR input)
   --sdr FILE                 HDR mode: the input is an HDR (PQ) PNG and FILE is the
@@ -141,6 +143,7 @@ function resolveConfig(values, positionals) {
       effort: parseRange(values['jixel-effort'], { integer: true }),
       depth: [8],
       patches: parsePatchModes(values['jixel-patches']),
+      splines: parseSplineModes(values['jixel-splines']),
       quality: [],
     },
     jxlStep: Number(values['jxl-step']),
@@ -265,6 +268,7 @@ async function main(argv) {
           qalpha: s.qalpha ?? undefined,
           alphaDistance: s.alphaDistance ?? undefined,
           patches: s.patches ?? undefined,
+          splines: s.splines ?? undefined,
           threads: CANONICAL_THREADS,
         }),
       );
@@ -318,15 +322,19 @@ async function main(argv) {
   return 0;
 }
 
-/** What identifies a setting in targets.json. `patches` only exists for jixel. */
+/**
+ * What identifies a setting in targets.json. `patches` only exists for jixel,
+ * and `splines` only when on, so earlier files' settings still match.
+ */
 function settingsOf(s) {
   const settings = { codec: s.codec, effort: s.effort, depth: s.depth, yuv: s.yuv, hdrMode: s.hdrMode };
   if (s.codec === 'jixel') settings.patches = Boolean(s.patches);
+  if (s.splines) settings.splines = true;
   return settings;
 }
 
 const rowId = (r) =>
-  JSON.stringify([r.codec, r.effort, r.depth, r.yuv ?? null, r.hdrMode ?? null, r.patches ?? null, r.target]);
+  JSON.stringify([r.codec, r.effort, r.depth, r.yuv ?? null, r.hdrMode ?? null, r.patches ?? null, r.splines || null, r.target]);
 
 async function readJson(file) {
   try {
@@ -363,7 +371,7 @@ function formatRows(rows) {
       String(r.target),
       r.file ? r.score.toFixed(2) : '--',
       r.file ? r.bytes.toLocaleString('en-US') : '--',
-      r.file ?? `unreachable (${[r.codec, `e${r.effort}`, r.yuv && `yuv${r.yuv}`, r.patches && 'patches', r.hdrMode].filter(Boolean).join('-')})`,
+      r.file ?? `unreachable (${[r.codec, `e${r.effort}`, r.yuv && `yuv${r.yuv}`, r.patches && 'patches', r.splines && 'splines', r.hdrMode].filter(Boolean).join('-')})`,
     ]),
   ];
   const widths = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));

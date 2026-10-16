@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { avif, jixel, jxl, webp, getCodec, lossyCodecs } from '../src/codecs/index.js';
+import { avif, jixel, jxl, png, webp, getCodec, lossyCodecs } from '../src/codecs/index.js';
 
 test('avif encode argv carries quality, effort, depth, subsampling', () => {
   const args = avif.buildEncodeArgs({
@@ -212,6 +212,7 @@ test('jixel lossless drops -q, and patches is a flag', () => {
     ['slow', 'slow+patches', 'extraslow', 'extraslow+patches'],
   );
   assert.equal(jixel.effortLabel(5, { patches: true }), 'slow+patches');
+  assert.equal(jixel.effortLabel(6, { patches: true, splines: true }), 'extraslow+patches+splines');
 });
 
 test('jixel progressive DC and group order are lossy-only flags', () => {
@@ -222,4 +223,32 @@ test('jixel progressive DC and group order are lossy-only flags', () => {
   assert.equal(args[args.indexOf('--group-order') + 1], 'center');
   const plain = jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', quality: 70, effort: 3 });
   assert.ok(!plain.includes('--progressive-dc') && !plain.includes('--group-order'));
+});
+
+test('oxipng always passes --force, so low levels report oxipng rather than the input', () => {
+  const args = png.buildEncodeArgs({ input: 'r.png', output: 'o.png', effort: 0 });
+  assert.ok(args.includes('--force'));
+  assert.equal(args[args.indexOf('-o') + 1], '0');
+  assert.equal(args[args.indexOf('--out') + 1], 'o.png');
+  assert.equal(args.at(-1), 'r.png');
+});
+
+test('oxipng is limited to one thread only for the single-thread timing column', () => {
+  assert.ok(!png.buildEncodeArgs({ input: 'r.png', output: 'o.png', threads: 'multi' }).includes('-t'));
+  const single = png.buildEncodeArgs({ input: 'r.png', output: 'o.png', threads: 'single' });
+  assert.equal(single[single.indexOf('-t') + 1], '1');
+});
+
+test('png decode re-expands to the reference layout, undoing oxipng reductions', () => {
+  assert.equal(png.buildDecodeArgs({ input: 'i.png', output: 'd.png', referenceChannels: 3 }).at(-1), 'PNG24:d.png');
+  assert.equal(png.buildDecodeArgs({ input: 'i.png', output: 'd.png', referenceChannels: 4 }).at(-1), 'PNG32:d.png');
+});
+
+test('jixel splines is a lossy-only flag', () => {
+  const lossy = jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', quality: 75, effort: 5, splines: true });
+  assert.ok(lossy.includes('--splines'));
+  // cjixel refuses --splines with --lossless, and it would do nothing there.
+  const lossless = jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', effort: 5, lossless: true, splines: true });
+  assert.ok(!lossless.includes('--splines'));
+  assert.ok(!jixel.buildEncodeArgs({ input: 'r.png', output: 'o.jxl', quality: 75, effort: 5 }).includes('--splines'));
 });

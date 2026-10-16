@@ -54,6 +54,7 @@ export async function decodeAndScore({
       input: bitstream,
       output: decodedPath,
       referenceDepth: referenceHeader.depth,
+      referenceChannels: referenceHeader.channels,
     });
     const decode = await run(codec.decoder, decodeArgs);
 

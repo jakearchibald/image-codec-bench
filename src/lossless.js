@@ -1,4 +1,4 @@
-// The lossless table (plan.md §7): AVIF, JXL and WebP at max effort.
+// The lossless table (plan.md §7): AVIF, JXL, WebP and PNG (oxipng).
 //
 // Each output is decoded and asserted bit-exact against the reference *and*
 // asserted to score exactly 100.00. Either check failing aborts the run rather
@@ -51,6 +51,7 @@ export async function losslessSuite({
   assetsDir,
   tempDir,
   hasWebp = true,
+  hasOxipng = true,
   cachedRows = [],
   force = false,
   log = () => {},
@@ -93,6 +94,14 @@ export async function losslessSuite({
           codec: codec.name,
           skipped: true,
           warning: 'cwebp/dwebp not installed; WebP row omitted.',
+        });
+        continue;
+      }
+      if (codec.name === 'png' && !hasOxipng) {
+        rows.push({
+          codec: codec.name,
+          skipped: true,
+          warning: 'oxipng not installed; PNG row omitted.',
         });
         continue;
       }
@@ -234,10 +243,12 @@ export async function losslessSuite({
   // every run rather than cached by key, since it is just a stat of a file we
   // already have.
   const { size: sourceBytes } = await stat(reference.path);
-  const cachedSource = (cachedRows ?? []).find((row) => row.codec === 'png');
+  // ImageMagick's encode, so not representative of an optimised PNG: that's
+  // what the oxipng rows are for.
+  const cachedSource = (cachedRows ?? []).find((row) => row.isSource);
   rows.push({
     codec: 'png',
-    label: 'source PNG (normalised reference)',
+    label: 'source PNG (normalised reference, ImageMagick encode)',
     bytes: sourceBytes,
     bpp: (sourceBytes * 8) / (referenceHeader.width * referenceHeader.height),
     score: null,

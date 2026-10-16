@@ -22,7 +22,7 @@ import { parseArgs } from 'node:util';
 
 import { parseTargets, resolveTarget } from './browsers.js';
 import { avif, jixel, jxl } from './codecs/index.js';
-import { parseDuration, parseYuvModes } from './config.js';
+import { parseDuration, parseSplineModes, parseYuvModes } from './config.js';
 import { WARMUP_RUNS, measureDecodeTimes, serveDirectory } from './decode.js';
 import { canMeasureMemory, measureSpawnOverhead, run, setToolPath } from './exec.js';
 import { LOCAL_LIBAVIF_DIR } from './hdr.js';
@@ -40,6 +40,7 @@ const OPTIONS = {
   'jxl-effort': { type: 'string', default: '7' },
   'jixel-quality': { type: 'string', default: '80' },
   'jixel-speed': { type: 'string' },
+  'jixel-splines': { type: 'string', default: 'off' },
   'avif-quality': { type: 'string', default: '50' },
   'avif-preview-quality': { type: 'string' },
   'avif-speed': { type: 'string', default: '6' },
@@ -98,6 +99,9 @@ Options:
   --jixel-speed RANGE        jixel speed 1-6, one group each (default none: no
                              jixel; 3 is jixel's own). Built from tools/cjixel
   --jixel-quality Q          jixel -q (default 80)
+  --jixel-splines LIST       off | on | off,on: jixel's experimental splines,
+                             one group per setting (default off; speed 5-6
+                             only, below that "on" is the same encode as off)
   --avif-quality Q           avifenc -q, both layers (default 50)
   --avif-preview-quality Q   avifenc -q for layer 0 (default --avif-quality)
   --avif-speed RANGE         avifenc -s, one group each (default 6, avifenc's own)
@@ -169,6 +173,7 @@ function resolveConfig(values, positionals) {
     jxlEfforts: intList(values['jxl-effort'], '--jxl-effort', 1, 10),
     jixelQuality: Number(values['jixel-quality']),
     jixelSpeeds: values['jixel-speed'] == null ? [] : intList(values['jixel-speed'], '--jixel-speed', 1, 6),
+    jixelSplines: parseSplineModes(values['jixel-splines']),
     avifQuality,
     avifPreviewQuality: values['avif-preview-quality'] == null
       ? avifQuality
@@ -311,12 +316,18 @@ function variants({ config, reference, preview, dir }) {
     );
   }
 
-  for (const speed of config.jixelSpeeds) {
-    const group = `jixel-s${speed}`;
-    const name = jixel.effortLabel(speed);
+  // Each splines setting is its own group, so a spline file is compared with
+  // the non-progressive spline file. Below jixel.SPLINES_MIN_SPEED "on" is the
+  // "off" encode, so it folds into that group, as in the main sweep.
+  const jixelGroups = config.jixelSpeeds.flatMap((speed) =>
+    [...new Set(config.jixelSplines.map((on) => on && jixel.splinesApply(speed)))].map((splines) => ({ speed, splines })),
+  );
+  for (const { speed, splines } of jixelGroups) {
+    const group = `jixel-s${speed}${splines ? '-splines' : ''}`;
+    const name = jixel.effortLabel(speed, { splines });
     const jixelArgs = (progressive) => function (threads, output = this.path, quality = this.quality) {
       return jixel.buildEncodeArgs({
-        input: reference.path, output, quality, effort: speed, threads,
+        input: reference.path, output, quality, effort: speed, threads, splines,
         ...(progressive ? { progressiveDc: true, groupOrder: 'center' } : {}),
       });
     };
@@ -757,7 +768,13 @@ async function main(argv) {
       targets: config.targets,
       jxl: { quality: config.jxlQuality, efforts: config.jxlEfforts },
       ...(config.jixelSpeeds.length
-        ? { jixel: { quality: config.jixelQuality, speeds: config.jixelSpeeds, progressiveDc: true, groupOrder: 'center' } }
+        ? {
+            jixel: {
+              quality: config.jixelQuality, speeds: config.jixelSpeeds, progressiveDc: true, groupOrder: 'center',
+              // Only when asked for, so earlier settings blocks read the same.
+              ...(config.jixelSplines.includes(true) ? { splines: config.jixelSplines } : {}),
+            },
+          }
         : {}),
       avif: {
         quality: config.avifQuality, previewQuality: config.avifPreviewQuality,

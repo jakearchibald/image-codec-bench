@@ -1,11 +1,14 @@
 //! cjixel IN.png OUT.jxl (-q QUALITY | --lossless) -s SPEED [-j THREADS] [--patches]
-//!        [--progressive-dc] [--group-order scanline|center|diagonals]
+//!        [--splines] [--progressive-dc] [--group-order scanline|center|diagonals]
 //! cjixel IN.jpg OUT.jxl --jpeg -s SPEED [-j THREADS] [--jpeg-reconstruction]
 //!
 //! QUALITY is jixel's libjpeg-like 0..100 scale (`EncodeConfig::with_quality`).
 //! SPEED is 1..6: UltraFast, Fastest, Fast (jixel's default), Medium, Slow,
 //! ExtraSlow -- higher is slower, like cjxl -e. THREADS 0 means all cores.
 //! `--patches` turns on jixel's patch dictionary (off by default).
+//! `--splines` (lossy only) turns on jixel's experimental spline coding of thin
+//! lines (`EncodeConfig::with_splines`, off by default). jixel only acts on it
+//! at speed 5 and 6; below that the output is the same as without it.
 //! `--progressive-dc` (lossy only) codes the 1:8 DC image as its own squeezed
 //! frame ahead of the main one, refining from an 8x8 preview to 1:8 before any
 //! AC arrives (`EncodeConfig::progressive_dc`, every squeeze level), like
@@ -37,7 +40,7 @@ const PQ_PEAK_NITS: f32 = 10000.0;
 fn usage() -> ExitCode {
     eprintln!(
         "usage: cjixel IN.png OUT.jxl (-q QUALITY | --lossless) -s SPEED(1-6) [-j THREADS] [--patches]\n       \
-         [--progressive-dc] [--group-order scanline|center|diagonals]\n       \
+         [--splines] [--progressive-dc] [--group-order scanline|center|diagonals]\n       \
          cjixel IN.jpg OUT.jxl --jpeg -s SPEED(1-6) [-j THREADS] [--jpeg-reconstruction]\n       cjixel --version"
     );
     ExitCode::from(2)
@@ -93,7 +96,7 @@ fn main() -> ExitCode {
     }
     let (mut positional, mut quality, mut speed, mut threads) = (Vec::new(), None, None, 0usize);
     let (mut lossless, mut patches, mut jpeg, mut reconstruction) = (false, false, false, false);
-    let (mut progressive_dc, mut group_order) = (false, None);
+    let (mut progressive_dc, mut group_order, mut splines) = (false, None, false);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -102,6 +105,7 @@ fn main() -> ExitCode {
             "-j" => threads = match it.next().and_then(|v| v.parse().ok()) { Some(n) => n, None => return usage() },
             "--lossless" => lossless = true,
             "--patches" => patches = true,
+            "--splines" => splines = true,
             "--progressive-dc" => progressive_dc = true,
             "--group-order" => match it.next().map(String::as_str) {
                 Some("scanline") => group_order = Some(GroupOrder::Scanline),
@@ -125,12 +129,12 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     if jpeg {
-        if quality.is_some() || lossless || patches || progressive_dc || group_order.is_some() {
+        if quality.is_some() || lossless || patches || splines || progressive_dc || group_order.is_some() {
             return usage();
         }
         return transcode_jpeg(input, output, speed, threads, reconstruction);
     }
-    if quality.is_some() == lossless || reconstruction || (lossless && (progressive_dc || group_order.is_some())) {
+    if quality.is_some() == lossless || reconstruction || (lossless && (progressive_dc || group_order.is_some() || splines)) {
         return usage();
     }
 
@@ -155,6 +159,7 @@ fn main() -> ExitCode {
         .with_lossless(lossless)
         .with_speed(speed)
         .with_patches(patches)
+        .with_splines(splines)
         .with_num_threads(threads);
     if let Some(quality) = quality {
         config = config.with_quality(quality);
